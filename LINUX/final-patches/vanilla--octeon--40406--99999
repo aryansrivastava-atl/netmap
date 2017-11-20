@@ -1,0 +1,54 @@
+diff --git a/octeon/ethernet-rx.c b/octeon/ethernet-rx.c
+index 42ab6d4726a4..4276b6ca0c4c 100644
+--- a/octeon/ethernet-rx.c
++++ b/octeon/ethernet-rx.c
+@@ -49,6 +49,12 @@
+ 
+ #include <asm/octeon/cvmx-gmxx-defs.h>
+ 
++#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
++#include <bsd_glue.h>
++#include <net/netmap.h>
++#include <netmap/netmap_kern.h>
++#endif
++
+ static struct napi_struct cvm_oct_napi;
+ 
+ /**
+diff --git a/octeon/ethernet.c b/octeon/ethernet.c
+index bfebbfc9716d..644104c26479 100644
+--- a/octeon/ethernet.c
++++ b/octeon/ethernet.c
+@@ -42,6 +42,10 @@
+ #include <asm/octeon/cvmx-gmxx-defs.h>
+ #include <asm/octeon/cvmx-smix-defs.h>
+ 
++#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
++#include <octeon_netmap.h>
++#endif
++
+ static int num_packet_buffers = 1024;
+ module_param(num_packet_buffers, int, 0444);
+ MODULE_PARM_DESC(num_packet_buffers, "\n"
+@@ -1100,6 +1104,10 @@ static int cvm_oct_probe(struct platform_device *pdev)
+ 				queue_delayed_work(cvm_oct_poll_queue,
+ 						&priv->port_periodic_work, HZ);
+ 			}
++
++#ifdef CONFIG_NETMAP
++			octeon_netmap_attach(priv);
++#endif /* DEV_NETMAP */
+ 		}
+ 	}
+ 
+@@ -1145,6 +1153,10 @@ static int cvm_oct_remove(struct platform_device *pdev)
+ 			struct net_device *dev = cvm_oct_device[port];
+ 			struct octeon_ethernet *priv = netdev_priv(dev);
+ 
++#ifdef CONFIG_NETMAP
++			octeon_netmap_detach(priv);
++#endif /* DEV_NETMAP */
++
+ 			cancel_delayed_work_sync(&priv->port_periodic_work);
+ 
+ 			cvm_oct_tx_shutdown_dev(dev);
