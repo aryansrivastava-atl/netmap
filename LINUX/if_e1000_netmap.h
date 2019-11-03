@@ -153,7 +153,7 @@ e1000_netmap_txsync(struct netmap_kring *kring, int flags)
 		txr->next_to_use = nic_i; /* XXX what for ? */
 		/* (re)start the tx unit up to slot nic_i (excluded) */
 		writel(nic_i, adapter->hw.hw_addr + txr->tdt);
-		mmiowb(); // XXX where do we need this ?
+		wmb(); // XXX where do we need this ?
 	}
 
 	/*
@@ -164,8 +164,8 @@ e1000_netmap_txsync(struct netmap_kring *kring, int flags)
 
 		/* record completed transmissions using TDH */
 		nic_i = readl(adapter->hw.hw_addr + txr->tdh);
-		if (nic_i >= kring->nkr_num_slots) { /* XXX can it happen ? */
-			D("TDH wrap %d", nic_i);
+		if (unlikely(nic_i >= kring->nkr_num_slots)) {
+			nm_prerr("TDH wrap %d", nic_i);
 			nic_i -= kring->nkr_num_slots;
 		}
 		nm_i = netmap_idx_n2k(kring, nic_i);
@@ -237,8 +237,12 @@ e1000_netmap_rxsync(struct netmap_kring *kring, int flags)
 
 			slot = ring->slot + nm_i;
 			PNMB(na, slot, &paddr);
-			slot->len = le16toh(curr->length) - 4;
-			slot->flags = (!(staterr & E1000_RXD_STAT_EOP) ? NS_MOREFRAG : 0);
+			slot->len = le16toh(curr->length);
+			slot->flags = NS_MOREFRAG;
+			if (staterr & E1000_RXD_STAT_EOP) {
+				slot->len -= 4; /* exclude the CRC */
+				slot->flags = 0;
+			}
 			netmap_sync_map_cpu(na, (bus_dma_tag_t) na->pdev,
 					&paddr, slot->len, NR_RX);
 			nm_i = nm_next(nm_i, lim);
@@ -314,7 +318,7 @@ static int e1000_netmap_init_buffers(struct SOFTC_T *adapter)
 		struct e1000_rx_ring *rxr;
 		slot = netmap_reset(na, NR_RX, r, 0);
 		if (!slot) {
-			D("Skipping RX ring %d, netmap mode not requested", r);
+			nm_prinf("Skipping RX ring %d, netmap mode not requested", r);
 			continue;
 		}
 		rxr = &adapter->rx_ring[r];
@@ -338,7 +342,7 @@ static int e1000_netmap_init_buffers(struct SOFTC_T *adapter)
 	for (r = 0; r < na->num_tx_rings; r++) {
 		slot = netmap_reset(na, NR_TX, r, 0);
 		if (!slot) {
-			D("Skipping TX ring %d, netmap mode not requested", r);
+			nm_prinf("Skipping TX ring %d, netmap mode not requested", r);
 			continue;
 		}
 

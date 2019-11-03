@@ -46,7 +46,7 @@
 int i40e_netmap_txsync(struct netmap_kring *kring, int flags);
 int i40e_netmap_rxsync(struct netmap_kring *kring, int flags);
 
-extern int ix_rx_miss, ix_rx_miss_bufs, ix_crcstrip;
+extern int ix_crcstrip;
 
 #ifdef NETMAP_LINUX_I40E_PTR_ARRAY
 #define NM_I40E_TX_RING(a, r)		((a)->tx_rings[(r)])
@@ -62,6 +62,9 @@ extern int ix_rx_miss, ix_rx_miss_bufs, ix_crcstrip;
 #endif
 
 #ifdef NETMAP_I40E_MAIN
+
+#define i40e_driver_name netmap_i40e_driver_name
+char i40e_driver_name[] = "i40e" NETMAP_LINUX_DRIVER_SUFFIX;
 /*
  * device-specific sysctl variables:
  *
@@ -71,18 +74,11 @@ extern int ix_rx_miss, ix_rx_miss_bufs, ix_crcstrip;
  *	so using crcstrip=0 helps in benchmarks.
  *      The driver by default strips CRCs and we do not override it.
  *
- * ix_rx_miss, ix_rx_miss_bufs:
- *	count packets that might be missed due to lost interrupts.
  */
 SYSCTL_DECL(_dev_netmap);
-int ix_rx_miss = 0, ix_rx_miss_bufs = 0, ix_crcstrip = 1;
+int ix_crcstrip = 1;
 SYSCTL_INT(_dev_netmap, OID_AUTO, ix_crcstrip,
 		CTLFLAG_RW, &ix_crcstrip, 1, "NIC strips CRC on rx frames");
-SYSCTL_INT(_dev_netmap, OID_AUTO, ix_rx_miss,
-		CTLFLAG_RW, &ix_rx_miss, 0, "potentially missed rx intr");
-SYSCTL_INT(_dev_netmap, OID_AUTO, ix_rx_miss_bufs,
-		CTLFLAG_RW, &ix_rx_miss_bufs, 0, "potentially missed rx intr bufs");
-
 #if 0
 static void
 set_crcstrip(struct ixgbe_hw *hw, int onoff)
@@ -100,7 +96,7 @@ set_crcstrip(struct ixgbe_hw *hw, int onoff)
 	hl = IXGBE_READ_REG(hw, IXGBE_HLREG0);
 	rxc = IXGBE_READ_REG(hw, IXGBE_RDRXCTL);
 	if (netmap_verbose)
-		D("%s read  HLREG 0x%x rxc 0x%x",
+		nm_prinf("%s read  HLREG 0x%x rxc 0x%x",
 			onoff ? "enter" : "exit", hl, rxc);
 	/* hw requirements ... */
 	rxc &= ~IXGBE_RDRXCTL_RSCFRSTSIZE;
@@ -115,7 +111,7 @@ set_crcstrip(struct ixgbe_hw *hw, int onoff)
 		rxc |= IXGBE_RDRXCTL_CRCSTRIP;
 	}
 	if (netmap_verbose)
-		D("%s write HLREG 0x%x rxc 0x%x",
+		nm_prinf("%s write HLREG 0x%x rxc 0x%x",
 			onoff ? "enter" : "exit", hl, rxc);
 	IXGBE_WRITE_REG(hw, IXGBE_HLREG0, hl);
 	IXGBE_WRITE_REG(hw, IXGBE_RDRXCTL, rxc);
@@ -188,7 +184,7 @@ i40e_netmap_configure_rx_ring(struct i40e_ring *ring)
 		rx->read.pkt_addr = htole64(paddr);
 		rx->read.hdr_addr = 0;
 	}
-	ring->next_to_clean = netmap_idx_k2n(kring, 0);
+	ring->next_to_clean = 0;
 	wmb();
 	writel(lim, ring->tail);
 	return 1;
@@ -233,15 +229,13 @@ i40e_netmap_reg(struct netmap_adapter *na, int onoff)
 static int
 i40e_netmap_config(struct netmap_adapter *na, struct nm_config_info *info)
 {
-	struct i40e_netdev_priv *np = netdev_priv(na->ifp);
-	struct i40e_vsi  *vsi = np->vsi;
 	int ret = netmap_rings_config_get(na, info);
 
 	if (ret) {
 		return ret;
 	}
 
-	info->rx_buf_maxsize = vsi->rx_buf_len;
+	info->rx_buf_maxsize = NETMAP_BUF_SIZE(na);
 
 	return 0;
 }
@@ -326,7 +320,7 @@ i40e_netmap_txsync(struct netmap_kring *kring, int flags)
 
 	txr = NM_I40E_TX_RING(vsi, kring->ring_id);
 	if (unlikely(!txr || !txr->desc)) {
-		RD(1, "ring %s is missing (txr=%p)", kring->name, txr);
+		nm_prlim(1, "ring %s is missing (txr=%p)", kring->name, txr);
 		return ENXIO;
 	}
 
@@ -493,7 +487,7 @@ i40e_netmap_rxsync(struct netmap_kring *kring, int flags)
 
 	rxr = NM_I40E_RX_RING(vsi, kring->ring_id);
 	if (unlikely(!rxr || !rxr->desc)) {
-		RD(1, "ring %s is missing (rxr=%p)", kring->name, rxr);
+		nm_prlim(1, "ring %s is missing (rxr=%p)", kring->name, rxr);
 		return ENXIO;
 	}
 
@@ -564,15 +558,10 @@ i40e_netmap_rxsync(struct netmap_kring *kring, int flags)
 			nic_i = nm_next(nic_i, lim);
 		}
 		if (n) { /* update the state variables */
-			if (netmap_no_pendintr && !force_update) {
-				/* diagnostics */
-				ix_rx_miss ++;
-				ix_rx_miss_bufs += n;
-			}
 			rxr->next_to_clean = nic_i;
 			if (likely(ntail <= lim)) {
 				kring->nr_hwtail = ntail;
-				ND("%s: nic_i %u nm_i %u ntail %u n %u", ifp->if_xname, nic_i, nm_i, ntail, n);
+				nm_prdis("%s: nic_i %u nm_i %u ntail %u n %u", ifp->if_xname, nic_i, nm_i, ntail, n);
 			}
 		}
 		kring->nr_kflags &= ~NKR_PENDINTR;
