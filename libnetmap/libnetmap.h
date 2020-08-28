@@ -56,7 +56,7 @@ struct nmem_d;
  *  netmap 		(no id allowed)
  *  			the standard subsystem
  *
- *  vale 		(followed by a possibily empty id)
+ *  vale 		(followed by a possibly empty id)
  *  			the vpname is connected to a VALE switch identified by
  *  			the id (an empty id selects the default switch)
  *
@@ -126,7 +126,7 @@ struct nmem_d;
  *  			slots		number of slots in each tx and rx
  *  					ring
  *  			tx-slots	number of slots in each tx ring
- *  			rx-slots	numner of slots in each rx ring
+ *  			rx-slots	number of slots in each rx ring
  *
  *  			(more specific keys override the less specific ones)
  *			All keys default to zero if not assigned, and the
@@ -149,6 +149,23 @@ struct nmem_d;
  *			file must be assigned. The other keys default to zero,
  *			causing netmap to take the corresponding values from
  *			the priv_{if,ring,buf}_{num,size} sysctls.
+ *
+ *  offset (multi-key)
+ *			reserve (part of) the ptr fields as an offset field
+ *			and write an initial offset into them.
+ *
+ *			The keys are:
+ *
+ *		        bits		number of bits of ptr to use
+ *		       *initial		initial offset value
+ *
+ *		        initial must be assigned. If bits is omitted, it
+ *		        defaults to the entire ptr field. The max offset is set
+ *		        at the same value as the initial offset. Note that the
+ *		        actual values may be increased by the kernel.
+ *
+ *		        This option is disabled by default (see
+ *			nmport_enable_option() below)
  */
 
 
@@ -175,7 +192,6 @@ struct nmport_d {
 	int mmap_done;		/* nmport_mmap() has been called */
 	/* pointer to the extmem option contained in the hdr options, if any */
 	struct nmreq_opt_extmem *extmem;
-	int extmem_autounmap;	/* 1 if nmport_undo_extmem should also munmap */
 
 	/* the fields below are compatible with nm_open() */
 	int fd;				/* "/dev/netmap", -1 if not open */
@@ -186,12 +202,15 @@ struct nmport_d {
 	uint16_t last_rx_ring;
 	uint16_t cur_tx_ring;		/* used by nmport_inject */
 	uint16_t cur_rx_ring;
+
+	/* LIFO list of cleanup functions (used internally) */
+	struct nmport_cleanup_d *clist;
 };
 
 /* nmport_open - opens a port from a portspec
  * @portspec	the port opening specification
  *
- * If successfull, the function returns a new nmport_d describing a netmap
+ * If successful, the function returns a new nmport_d describing a netmap
  * port, opened according to the port specification, ready to be used for rx
  * and/or tx.
  *
@@ -233,11 +252,11 @@ int nmport_inject(struct nmport_d *d, const void *buf, size_t size);
  * The relation among the functions is as follows:
  *
  *				   |nmport_new
- * 		|nport_prepare	 = |
+ * 		|nmport_prepare	 = |
  *		|		   |nmport_parse
  * nmport_open =|
  *		|		   |nmport_register
- *		|nport_open_desc = |
+ *		|nmport_open_desc =|
  *				   |nmport_mmap
  *
  */
@@ -279,7 +298,7 @@ int nmport_register(struct nmport_d *);
 /* nmport_mmap - maps the port resources into the process memory
  * @d		the nmport to be mapped
  *
- * The port must have been previosly been registered using nmport_register.
+ * The port must have been previously been registered using nmport_register.
  *
  * Note that if extmem is used (either via an option or by calling an
  * nmport_extmem_* function before nmport_register()), no new mmap() is issued.
@@ -363,22 +382,18 @@ struct nmport_d *nmport_clone(struct nmport_d *);
  * between nmport_parse() and nmport_register() (or between nmport_prepare()
  * and nmport_open_desc()).
  *
- * If @d was already using extmem the function fails. The previous extmem
- * can be removed with nmport_extmem_undo(), if necessary.
- *
  * It returns 0 on success. On failure it returns -1, sets errno to an error
  * value and sends an error message to the error() method of the context used
  * when @d was created. Moreover, *@d is left unchanged.
  */
 int nmport_extmem(struct nmport_d *d, void *base, size_t size);
 
-/* nmport_extmem - use the extmem obtained by mapping a file
+/* nmport_extmem_from_file - use the extmem obtained by mapping a file
  * @d		the port we want to use the extmem for
  * @fname	path of the file we want to map
  *
- * This works like nmport_extmem, but the extmem memory is obtained
- * by mmap()ping @fname. netmap_undo_extmem() and nmport_close()
- * will also automatically munmap() the file.
+ * This works like nmport_extmem, but the extmem memory is obtained by
+ * mmap()ping @fname. nmport_close() will also automatically munmap() the file.
  *
  * It returns 0 on success. On failure it returns -1, sets errno to an error
  * value and sends an error message to the error() method of the context used
@@ -386,13 +401,58 @@ int nmport_extmem(struct nmport_d *d, void *base, size_t size);
  */
 int nmport_extmem_from_file(struct nmport_d *d, const char *fname);
 
-/* nmport_undo_extmem - remove the extmem option, if any
- * @d		the port we want to remove the extmem from
+/* nmport_extmem_getinfo - opbtai a pointer to the extmem configuration
+ * @d		the port we want to obtain the pointer from
  *
- * Removes the extmem option, if any was used in @d. It also munmap the
- * extmem region if that was obtained via nmport_extmem_from_file().
+ * Returns a pointer to the nmreq_pools_info structure containing the
+ * configuration of the extmem attached to port @d, or NULL if no extmem
+ * is attached. This can be used to set the desired configuration before
+ * registering the port, or to read the actual configuration after
+ * registration.
  */
-void nmport_undo_extmem(struct nmport_d *);
+struct nmreq_pools_info* nmport_extmem_getinfo(struct nmport_d *d);
+
+
+/* nmport_offset - use offsets for this port
+ * @initial	the initial offset for all the slots
+ * @maxoff	the maximum offset
+ * @bits	the number of bits of slot->ptr to use for the offsets
+ * @mingap	the minimum gap betwen offsets (in shared buffers)
+ *
+ * With this option the lower @bits bits of the ptr field in the netmap_slot
+ * can be used to specify an offset into the buffer.  All offsets will be set
+ * to the @initial value by netmap.
+ *
+ * The offset field can be read and updated using the bitmask found in
+ * ring->offset_mask after a successful register.  netmap_user.h contains
+ * some helper macros (NETMAP_ROFFSET, NETMAP_WOFFSET and NETMAP_BUF_OFFSET).
+ *
+ * For RX rings, the user writes the offset o in an empty slot before passing
+ * it to netmap; then, netmap will write the incoming packet at an offset o' >=
+ * o in the buffer. o' may be larger than o because of, e.g., alignment
+ * constrains.  If o' > o netmap will also update the offset field in the slot.
+ * Note that large offsets may cause the port to split the packet over several
+ * slots, setting the NS_MOREFRAG flag accordingly.
+ *
+ * For TX rings, the user may prepare the packet to send at an offset o into
+ * the buffer and write o in the offset field. Netmap will send the packets
+ * starting o bytes in the buffer. Note that the address of the packet must
+ * comply with any alignment constraints that the port may have, or the result
+ * will be undefined. The user may read the alignment constraint in the new
+ * ring->buf_align field.  It is also possibile that empty slots already come
+ * with a non-zero offset o specified in the offset field. In this case, the
+ * user will have to write the packet at an offset o' >= o.
+ *
+ * The user must also declare the @maxoff offset that she is going to use. Any
+ * offset larger than this will be truncated.
+ *
+ * The user may also declare a @mingap (ignored if zero) if she plans to use
+ * offsets to share the same buffer among several slots. Netmap will guarantee
+ * that it will never write more than @mingap bytes for each slot, irrespective
+ * of the buffer length.
+ */
+int nmport_offset(struct nmport_d *d, uint64_t initial, uint64_t maxoff,
+		uint64_t bits, uint64_t mingap);
 
 /* enable/disable options
  *
@@ -404,7 +464,7 @@ void nmport_undo_extmem(struct nmport_d *);
  * If the option is unknown, nmport_disable_option is a NOP, while
  * nmport_enable_option returns -1 and sets errno to EOPNOTSUPP.
  *
- * These functions are not threadsafe and are ment to be used at the beginning
+ * These functions are not threadsafe and are meant to be used at the beginning
  * of the program.
  */
 void nmport_disable_option(const char *opt);
@@ -443,7 +503,7 @@ void nmreq_header_init(struct nmreq_header *hdr, uint16_t reqtype, void *body);
 int nmreq_header_decode(const char **ppspec, struct nmreq_header *hdr,
 		struct nmctx *ctx);
 
-/* nmreq_regiter_decode - inizialize an nmreq_register
+/* nmreq_regiter_decode - initialize an nmreq_register
  * @pmode:	(in/out) pointer to a pointer to an opening mode
  * @reg:	pointer to the nmreq_register to be initialized
  * @ctx:	pointer to the nmctx to use (for errors)
@@ -473,7 +533,7 @@ int nmreq_register_decode(const char **pmode, struct nmreq_register *reg,
  *
  * This function parses each option in @opt. Each option is matched (based on
  * the "option" prefix) to a corresponding parser in @parsers. The function
- * checks that the syntax is appropriate for the parser and it assignes all the
+ * checks that the syntax is appropriate for the parser and it assigns all the
  * keys mentioned in the option. It then passes control to the parser, to
  * interpret the keys values.
  *
@@ -534,7 +594,7 @@ struct nmreq_parse_ctx {
  * @portname	pointer to a pointer to the portname
  * @ctx		pointer to the nmctx to use (for errors)
  *
- * *@portname must point to a substem:vpname porname, possibily followed by
+ * *@portname must point to a substem:vpname porname, possibly followed by
  * something else.
  *
  * If successful, returns the mem_id of *@portname and moves @portname past the
@@ -548,6 +608,11 @@ void nmreq_push_option(struct nmreq_header *, struct nmreq_option *);
 void nmreq_remove_option(struct nmreq_header *, struct nmreq_option *);
 struct nmreq_option *nmreq_find_option(struct nmreq_header *, uint32_t);
 void nmreq_free_options(struct nmreq_header *);
+const char* nmreq_option_name(uint32_t);
+#define nmreq_foreach_option(h_, o_) \
+	for ((o_) = (struct nmreq_option *)((h_)->nr_options);\
+	     (o_) != NULL;\
+	     (o_) = (struct nmreq_option *)((o_)->nro_next))
 
 /* nmctx manipulation */
 
@@ -557,10 +622,10 @@ void nmreq_free_options(struct nmreq_header *);
  *   ports that are using the same region (as identified by the mem_id) will
  *   point to the same nmem_d instance.
  *
- * - allow the user to specifiy how to lock accesses to the above list, if
+ * - allow the user to specify how to lock accesses to the above list, if
  *   needed (lock() callback)
  *
- * - allow the user to specifiy how error messages should be delivered (error()
+ * - allow the user to specify how error messages should be delivered (error()
  *   callback)
  *
  * - select the verbosity of the library (verbose field); if verbose==0, no
@@ -599,7 +664,7 @@ struct nmctx *nmctx_set_default(struct nmctx *ctx);
 
 /* struct nmem_d - describes a memory region currently used */
 struct nmem_d {
-	uint16_t mem_id;	/* the region netmap identifer */
+	uint16_t mem_id;	/* the region netmap identifier */
 	int refcount;		/* how many nmport_d's point here */
 	void *mem;		/* memory region base address */
 	size_t size;		/* memory region size */
@@ -632,7 +697,7 @@ static  __attribute__((used)) void libnetmap_init(void)
 
 /* nmctx_set_threadsafe - install a threadsafe default context
  *
- * called by the contructor in nmctx-pthread.o to initialize a lock and install
+ * called by the constructor in nmctx-pthread.o to initialize a lock and install
  * the lock() callback in the default context.
  */
 void nmctx_set_threadsafe(void);

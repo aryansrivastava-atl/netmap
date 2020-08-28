@@ -585,13 +585,13 @@ nmreq_find_option(struct nmreq_header *h, uint32_t t)
 void
 nmreq_remove_option(struct nmreq_header *h, struct nmreq_option *o)
 {
-	uintptr_t *scan;
+	struct nmreq_option **nmo;
 
-	for (scan = &h->nr_options; *scan;
-			scan = &((struct nmreq_option *)*scan)->nro_next) {
-		if (*scan == (uintptr_t)o) {
-			*scan = o->nro_next;
-			o->nro_next = 0;
+	for (nmo = (struct nmreq_option **)&h->nr_options; *nmo != NULL;
+	    nmo = (struct nmreq_option **)&(*nmo)->nro_next) {
+		if (*nmo == o) {
+			*((uint64_t *)(*nmo)) = o->nro_next;
+			o->nro_next = (uint64_t)(uintptr_t)NULL;
 			break;
 		}
 	}
@@ -605,6 +605,25 @@ nmreq_free_options(struct nmreq_header *h)
 	for (o = (struct nmreq_option *)h->nr_options; o != NULL; o = next) {
 		next = (struct nmreq_option *)o->nro_next;
 		free(o);
+	}
+}
+
+const char*
+nmreq_option_name(uint32_t nro_reqtype)
+{
+	switch (nro_reqtype) {
+	case NETMAP_REQ_OPT_EXTMEM:
+		return "extmem";
+	case NETMAP_REQ_OPT_SYNC_KLOOP_EVENTFDS:
+		return "sync-kloop-eventfds";
+	case NETMAP_REQ_OPT_CSB:
+		return "csb";
+	case NETMAP_REQ_OPT_SYNC_KLOOP_MODE:
+		return "sync-kloop-mode";
+	case NETMAP_REQ_OPT_OFFSETS:
+		return "offsets";
+	default:
+		return "unknown";
 	}
 }
 

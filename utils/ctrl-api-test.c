@@ -57,6 +57,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <signal.h>
+#include <stddef.h>
 #include "libnetmap.h"
 
 #ifdef __FreeBSD__
@@ -71,6 +72,8 @@ eventfd(int x __unused, int y __unused)
 #else /* __linux__ */
 #include <sys/eventfd.h>
 #endif
+
+#define NM_IFNAMSZ 64
 
 static int
 exec_command(int argc, const char *const argv[])
@@ -144,9 +147,9 @@ exec_command(int argc, const char *const argv[])
 #define THRET_FAILURE	((void *)0)
 
 struct TestContext {
-	char ifname[64];
-	char ifname_ext[128];
-	char bdgname[64];
+	char ifname[NM_IFNAMSZ];
+	char ifname_ext[NM_IFNAMSZ];
+	char bdgname[NM_IFNAMSZ];
 	uint32_t nr_tx_slots;   /* slots in tx rings */
 	uint32_t nr_rx_slots;   /* slots in rx rings */
 	uint16_t nr_tx_rings;   /* number of tx rings */
@@ -182,7 +185,8 @@ nmreq_hdr_init(struct nmreq_header *hdr, const char *ifname)
 {
 	memset(hdr, 0, sizeof(*hdr));
 	hdr->nr_version = NETMAP_API;
-	strncpy(hdr->nr_name, ifname, sizeof(hdr->nr_name) - 1);
+	assert(strlen(ifname) < NM_IFNAMSZ);
+	strncpy(hdr->nr_name, ifname, sizeof(hdr->nr_name));
 }
 
 /* Single NETMAP_REQ_PORT_INFO_GET. */
@@ -527,16 +531,30 @@ port_register_hwall_rx(struct TestContext *ctx)
 	return port_register(ctx);
 }
 
+
+static int
+vale_mkname(char *vpname, struct TestContext *ctx)
+{
+	if (snprintf(vpname, NM_IFNAMSZ, "%s:%s", ctx->bdgname, ctx->ifname_ext) >= NM_IFNAMSZ) {
+		fprintf(stderr, "%s:%s too long (max %d chars)\n", ctx->bdgname, ctx->ifname_ext,
+				NM_IFNAMSZ - 1);
+		return -1;
+	}
+	return 0;
+}
+
+
 /* NETMAP_REQ_VALE_ATTACH */
 static int
 vale_attach(struct TestContext *ctx)
 {
 	struct nmreq_vale_attach req;
 	struct nmreq_header hdr;
-	char vpname[sizeof(ctx->bdgname) + 1 + sizeof(ctx->ifname_ext)];
+	char vpname[NM_IFNAMSZ];
 	int ret;
 
-	snprintf(vpname, sizeof(vpname), "%s:%s", ctx->bdgname, ctx->ifname_ext);
+	if (vale_mkname(vpname, ctx) < 0)
+		return -1;
 
 	printf("Testing NETMAP_REQ_VALE_ATTACH on '%s'\n", vpname);
 	nmreq_hdr_init(&hdr, vpname);
@@ -568,10 +586,11 @@ vale_detach(struct TestContext *ctx)
 {
 	struct nmreq_header hdr;
 	struct nmreq_vale_detach req;
-	char vpname[256];
+	char vpname[NM_IFNAMSZ];
 	int ret;
 
-	snprintf(vpname, sizeof(vpname), "%s:%s", ctx->bdgname, ctx->ifname_ext);
+	if (vale_mkname(vpname, ctx) < 0)
+		return -1;
 
 	printf("Testing NETMAP_REQ_VALE_DETACH on '%s'\n", vpname);
 	nmreq_hdr_init(&hdr, vpname);
@@ -846,10 +865,12 @@ vale_polling_enable(struct TestContext *ctx)
 {
 	struct nmreq_vale_polling req;
 	struct nmreq_header hdr;
-	char vpname[256];
+	char vpname[NM_IFNAMSZ];
 	int ret;
 
-	snprintf(vpname, sizeof(vpname), "%s:%s", ctx->bdgname, ctx->ifname_ext);
+	if (vale_mkname(vpname, ctx) < 0)
+		return -1;
+
 	printf("Testing NETMAP_REQ_VALE_POLLING_ENABLE on '%s'\n", vpname);
 
 	nmreq_hdr_init(&hdr, vpname);
@@ -878,10 +899,12 @@ vale_polling_disable(struct TestContext *ctx)
 {
 	struct nmreq_vale_polling req;
 	struct nmreq_header hdr;
-	char vpname[256];
+	char vpname[NM_IFNAMSZ];
 	int ret;
 
-	snprintf(vpname, sizeof(vpname), "%s:%s", ctx->bdgname, ctx->ifname_ext);
+	if (vale_mkname(vpname, ctx) < 0)
+		return -1;
+
 	printf("Testing NETMAP_REQ_VALE_POLLING_DISABLE on '%s'\n", vpname);
 
 	nmreq_hdr_init(&hdr, vpname);
@@ -1954,6 +1977,37 @@ nmreq_parsing(struct TestContext *ctx)
 	return ret;
 }
 
+static int
+binarycomp(struct TestContext *ctx)
+{
+#define ckroff(f, o) do {\
+	if (offsetof(struct netmap_ring, f) != (o)) {\
+		printf("offset of netmap_ring.%s is %zd, but it should be %d",\
+				#f, offsetof(struct netmap_ring, f), (o));\
+		return -1;\
+	}\
+} while (0)
+
+	(void)ctx;
+
+	ckroff(buf_ofs, 0);
+	ckroff(num_slots, 8);
+	ckroff(nr_buf_size, 12);
+	ckroff(ringid, 16);
+	ckroff(dir, 18);
+	ckroff(head, 20);
+	ckroff(cur, 24);
+	ckroff(tail, 28);
+	ckroff(flags, 32);
+	ckroff(ts, 40);
+	ckroff(offset_mask, 56);
+	ckroff(buf_align, 64);
+	ckroff(sem, 128);
+	ckroff(slot, 256);
+
+	return 0;
+}
+
 static void
 usage(const char *prog)
 {
@@ -2023,6 +2077,7 @@ static struct mytest tests[] = {
 	decltest(legacy_regif_extra_bufs_pipe),
 	decltest(legacy_regif_extra_bufs_pipe_vale),
 	decltest(nmreq_parsing),
+	decltest(binarycomp),
 };
 
 static void
