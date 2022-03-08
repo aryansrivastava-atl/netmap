@@ -516,10 +516,15 @@ static int octeon_netmap_rxsync(struct netmap_kring *kring, int flags)
 #ifdef ATL_CHANGE
 			/* Some ATL products have a switch port pretending to be an ethernet port */
 			if (priv->switch_eth) {
-				/* Copy the packet - overwrite the broadcom tag with the ethernet header*/
-				memcpy (addr + offset, cvmx_phys_to_ptr (work->packet_ptr.s.addr) + BCM_TAG_LEN + VLAN_HLEN, length - BCM_TAG_LEN - VLAN_HLEN);
+				/* Copy the packet - overwrite the broadcom tag with the ethernet header.
+				 * Skip the switch chip inserted dot1q vid=0 tag if present.
+				 */
+				int skip = BCM_TAG_LEN;
+				if (*(uint32_t*)(cvmx_phys_to_ptr (work->packet_ptr.s.addr) + BCM_TAG_LEN + 12) == htonl (0x81000000))
+					skip += VLAN_HLEN;
+				memcpy (addr + offset, cvmx_phys_to_ptr (work->packet_ptr.s.addr) + skip, length - skip);
 				memcpy (addr + offset, cvmx_phys_to_ptr (work->packet_ptr.s.addr), ETH_ALEN * 2);
-				length -= (BCM_TAG_LEN + VLAN_HLEN);
+				length -= skip;
 			}
 			else
 #endif /* ATL_CHANGE */
