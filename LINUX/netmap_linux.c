@@ -1362,8 +1362,12 @@ linux_netmap_set_ringparam(struct net_device *dev,
 #else
 int
 linux_netmap_set_ringparam(struct net_device *dev,
-	struct ethtool_ringparam *e)
-#endif
+	struct ethtool_ringparam *e
+#ifdef NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS
+	, struct kernel_ethtool_ringparam *k
+	, struct netlink_ext_ack *a
+#endif /* NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS */
+	)
 {
 #ifdef NETMAP_LINUX_HAVE_AX25PTR
 	return -EBUSY;
@@ -1373,11 +1377,11 @@ linux_netmap_set_ringparam(struct net_device *dev,
 	if (nm_netmap_on(na))
 		return -EBUSY;
 	if (na->magic.save_eto->set_ringparam)
-#ifdef NETMAP_LINUX_HAVE_SET_RINGPARAM_4ARGS
-		return na->magic.save_eto->set_ringparam(dev, e, kernel_ering, extack);
-#else
-		return na->magic.save_eto->set_ringparam(dev, e);
-#endif
+		return na->magic.save_eto->set_ringparam(dev, e
+#ifdef NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS
+				, k, a
+#endif /* NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS */
+				)
 	return -EOPNOTSUPP;
 #endif /* NETMAP_LINUX_HAVE_AX25PTR */
 }

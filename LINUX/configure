@@ -1830,18 +1830,17 @@ EOF
 	}
 EOF
 
-# check for set_ringparam number of args
-  add_test 'have SET_RINGPARAM_4ARGS' <<EOF
+  # setringparam additional parameters
+  add_test 'have SETRNGPRM_4ARGS' <<EOF
+	#include <linux/netdevice.h>
 	#include <linux/ethtool.h>
 
-	extern int linux_netmap_set_ringparam(struct net_device *dev,
-		struct ethtool_ringparam *e,
-		struct kernel_ethtool_ringparam *kernel_ering,
-		struct netlink_ext_ack *extack);
-	static const struct ethtool_ops dummy = {
-		.set_ringparam = linux_netmap_set_ringparam
-
-	};
+	int
+	dummy(struct net_device *net, struct ethtool_ringparam *r,
+		struct kernel_ethtool_ringparam *k,
+		struct netlink_ext_ack *a) {
+		return net->ethtool_ops->set_ringparam(net, r, k, a);
+	}
 EOF
 
   #####################################################

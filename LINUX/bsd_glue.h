@@ -312,6 +312,12 @@ int linux_netmap_set_ringparam(struct net_device *, struct ethtool_ringparam *);
 /*
  * We hide behind the ethtool_ops
  */
+int linux_netmap_set_ringparam(struct net_device *, struct ethtool_ringparam *
+#ifdef NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS
+		, struct kernel_ethtool_ringparam *
+		, struct netlink_ext_ack
+#endif /* NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS */
+		);
 struct netmap_linux_magic {
 	struct ethtool_ops eto;
 	const struct ethtool_ops *save_eto;
