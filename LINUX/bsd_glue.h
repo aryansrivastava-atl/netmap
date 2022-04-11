@@ -232,12 +232,14 @@ struct thread;
 // XXX maybe implement it as a proper function somewhere
 // it is important to set s->len before the copy.
 #ifdef ATL_CHANGE
-#define	m_devget(_buf, _len, _ofs, _dev, _fn, _mark, _hash, _iif)	( {		\
+#define	m_devget(_buf, _len, _ofs, _dev, _fn, _mark, _hash, _iif, _protocol)	( {		\
 	struct sk_buff *s = netdev_alloc_skb(_dev, _len);	\
 	if (s) {						\
 		skb_put(s, _len);					\
 		skb_copy_to_linear_data_offset(s, _ofs, _buf, _len);	\
-		if (_dev)	\
+		if (_protocol) \
+			s->protocol = htons(_protocol);		 \
+		else if (_dev)                                    \
 			s->protocol = eth_type_trans(s, _dev);		\
 		s->mark = _mark;				\
 		skb_set_hash(s, _hash, PKT_HASH_TYPE_L4);	\

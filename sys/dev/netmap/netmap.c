@@ -1220,7 +1220,19 @@ netmap_grab_packets(struct netmap_kring *kring, struct mbq *q, int force)
 		slot->flags &= ~NS_FORWARD; // XXX needed ?
 		/* XXX TODO: adapt to the case of a multisegment packet */
 #ifdef ATL_CHANGE
-		m = m_devget(NMB(na, slot), slot->len, 0, na->ifp, NULL, slot->mark, slot->hash, slot->iif);
+		rcu_read_lock();
+		struct net_device *dev = dev_get_by_index_rcu(dev_net(na->ifp), slot->iif);
+		if (dev)
+		{
+			m = m_devget(NMB(na, slot), slot->len, 0,
+			             dev, NULL, slot->mark, slot->hash, slot->iif,
+			             slot->protocol);
+		}
+		else
+		{
+			m = NULL;
+		}
+		rcu_read_unlock();
 #else
 		m = m_devget(NMB(na, slot), slot->len, 0, na->ifp, NULL);
 #endif

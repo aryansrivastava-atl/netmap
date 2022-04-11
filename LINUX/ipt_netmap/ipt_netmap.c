@@ -321,7 +321,8 @@ static int ipt_txsync(struct netmap_kring *kring, int flags)
 
 		/* Copy into a fresh new skbuff */
 		skb = m_devget(buffer, len, 0, NULL, NULL, slot->mark,
-					   slot->hash, slot->iif);
+					   slot->hash, slot->iif,
+				           slot->protocol);
 		if (skb == NULL)
 			continue;
 		skb_pull(skb, ETH_HLEN);
