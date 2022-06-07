@@ -1230,6 +1230,7 @@ netmap_grab_packets(struct netmap_kring *kring, struct mbq *q, int force)
 		}
 		else
 		{
+			kring->ring->drops++;
 			m = NULL;
 		}
 		rcu_read_unlock();
