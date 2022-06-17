@@ -173,9 +173,9 @@ struct netmap_slot {
 #ifdef ATL_CHANGE
 	uint32_t mark;		/* packet mark */
 	uint32_t hash;		/* flow hash */
-	uint16_t ll_ofs;	/* link layer offset for this slot */
 	uint32_t iif;		/* ifindex of the interface this packet came in on */
-	uint16_t protocol;      /* Ethertype of payload */
+	uint16_t ll_ofs;	/* link layer offset for this slot */
+	uint16_t protocol;	/* Ethertype of payload */
 #endif
 };
 
