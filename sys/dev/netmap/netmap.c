@@ -1229,6 +1229,14 @@ netmap_grab_packets(struct netmap_kring *kring, struct mbq *q, int force)
 			m = m_devget(NMB(na, slot), slot->len, 0,
 			             dev, NULL, slot->mark, slot->hash, slot->iif,
 			             slot->protocol);
+			if (na->ifp != dev)
+			{
+				struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
+				u64_stats_update_begin(&tstats->syncp);
+				tstats->rx_packets++;
+				tstats->rx_bytes += slot->len;
+				u64_stats_update_end(&tstats->syncp);
+			}
 		}
 		else
 		{
