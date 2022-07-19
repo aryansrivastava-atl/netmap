@@ -567,9 +567,14 @@ linux_generic_rx_handler_common(struct mbuf *m)
 	/* When we intercept a sk_buff coming from the driver, it happens that
 	   skb->data points to the IP header, e.g. the ethernet header has
 	   already been pulled. Since we want the netmap rings to contain the
-	   full ethernet header, we push it back, so that the RX ring reader
-	   can see it. */
+	   full ethernet header, we push it (including any dot1q tag) back, so
+	   that the RX ring reader can see it.
+	*/
 	skb_push(m, ETH_HLEN);
+	if (skb_vlan_tag_present(m))
+	{
+		skb_vlan_push(m, m->vlan_proto, skb_vlan_tag_get(m));
+	}
 
 #ifdef ATL_CHANGE
 	if (m->dev->type == ARPHRD_PPP ||
@@ -590,6 +595,10 @@ linux_generic_rx_handler_common(struct mbuf *m)
 		return NM_RX_HANDLER_STOLEN;
 	}
 
+	if (skb_vlan_tag_present(m))
+	{
+		skb_vlan_pop(m);
+	}
 	skb_pull(m, ETH_HLEN);
 
 	return NM_RX_HANDLER_PASS;
