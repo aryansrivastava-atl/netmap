@@ -1106,6 +1106,17 @@ generic_netmap_attach(struct ifnet *ifp)
 		return EINVAL;
 	}
 
+#ifdef ATL_CHANGE
+	/**
+	* For oversized rings, use the generic parameters.
+	*/
+	if (num_tx_desc > netmap_generic_ringsize)
+		num_tx_desc = netmap_generic_ringsize;
+
+	if (num_rx_desc > netmap_generic_ringsize)
+		num_rx_desc = netmap_generic_ringsize;
+#endif
+
 	gna = nm_os_malloc(sizeof(*gna));
 	if (gna == NULL) {
 		nm_prerr("no memory on attach, give up");
