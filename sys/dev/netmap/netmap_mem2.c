@@ -38,7 +38,7 @@
 
 #ifdef __FreeBSD__
 #include <sys/cdefs.h> /* prerequisite */
-__FBSDID("$FreeBSD: head/sys/dev/netmap/netmap.c 241723 2012-10-19 09:41:45Z glebius $");
+__FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 #include <sys/malloc.h>
@@ -167,7 +167,7 @@ struct netmap_mem_d {
 
 	u_int flags;
 #define NETMAP_MEM_FINALIZED	0x1	/* preallocation done */
-#define NETMAP_MEM_HIDDEN	0x8	/* beeing prepared */
+#define NETMAP_MEM_HIDDEN	0x8	/* being prepared */
 #define NETMAP_MEM_NOMAP	0x10	/* do not map/unmap pdevs */
 	int lasterr;		/* last error for curr config */
 	int active;		/* active users */
@@ -179,7 +179,7 @@ struct netmap_mem_d {
 #ifdef CONFIG_NET_NS
 	unsigned int nsid; /* namespace id */
 #endif
-	int nm_grp;	/* iommu groupd id */
+	int nm_grp;	/* iommu group id */
 
 	/* list of all existing allocators, sorted by nm_id */
 	struct netmap_mem_d *prev, *next;
@@ -315,7 +315,7 @@ netmap_mem_rings_delete(struct netmap_adapter *na)
 
 static int netmap_mem_map(struct netmap_obj_pool *, struct netmap_adapter *);
 static int netmap_mem_unmap(struct netmap_obj_pool *, struct netmap_adapter *);
-static int nm_mem_check_group(struct netmap_mem_d *, struct device *);
+static int nm_mem_check_group(struct netmap_mem_d *, bus_dma_tag_t);
 static void nm_mem_release_id(struct netmap_mem_d *);
 #ifdef CONFIG_NET_NS
 struct netmap_mem_d *netmap_mem_ns_create(void);
@@ -329,14 +329,14 @@ netmap_mem_get_id(struct netmap_mem_d *nmd)
 
 #ifdef NM_DEBUG_MEM_PUTGET
 #define NM_DBG_REFC(nmd, func, line)	\
-	nm_prinf("%d mem[%d:%d] -> %d", line, (nmd)->nm_id, (nmd)->nm_grp, (nmd)->refcount);
+	nm_prinf("%s:%d mem[%d:%d] -> %d", func, line, (nmd)->nm_id, (nmd)->nm_grp, (nmd)->refcount);
 #else
 #define NM_DBG_REFC(nmd, func, line)
 #endif
 
 /* circular list of all existing allocators */
 static struct netmap_mem_d *netmap_last_mem_d = &nm_mem;
-NM_MTX_T nm_mem_list_lock;
+static NM_MTX_T nm_mem_list_lock;
 
 struct netmap_mem_d *
 __netmap_mem_get(struct netmap_mem_d *nmd, const char *func, int line)
@@ -749,7 +749,7 @@ netmap_mem_find(nm_memid_t id)
 }
 
 static int
-nm_mem_check_group(struct netmap_mem_d *nmd, struct device *dev)
+nm_mem_check_group(struct netmap_mem_d *nmd, bus_dma_tag_t dev)
 {
 	int err = 0, id;
 
@@ -875,7 +875,7 @@ netmap_mem2_ofstophys(struct netmap_mem_d* nmd, vm_ooffset_t offset)
  *
  *		2a - cycle all the objects in every pool, get the list
  *				of the physical address descriptors
- *		2b - calculate the offset in the array of pages desciptor in the
+ *		2b - calculate the offset in the array of pages descriptor in the
  *				main MDL
  *		2c - copy the descriptors of the object in the main MDL
  *
@@ -1435,7 +1435,7 @@ netmap_finalize_obj_allocator(struct netmap_obj_pool *p)
 
 	if (p->lut) {
 		/* if the lut is already there we assume that also all the
-		 * clusters have already been allocated, possibily by somebody
+		 * clusters have already been allocated, possibly by somebody
 		 * else (e.g., extmem). In the latter case, the alloc_done flag
 		 * will remain at zero, so that we will not attempt to
 		 * deallocate the clusters by ourselves in
@@ -1561,10 +1561,10 @@ netmap_mem_unmap(struct netmap_obj_pool *p, struct netmap_adapter *na)
 	struct netmap_lut *lut;
 	if (na == NULL || na->pdev == NULL)
 		return 0;
-	
+
 	lut = &na->na_lut;
 
-	
+
 
 #if defined(__FreeBSD__)
 	/* On FreeBSD mapping and unmapping is performed by the txsync
@@ -1729,11 +1729,11 @@ _netmap_mem_private_new(size_t size, struct netmap_obj_params *p, int grp_id,
 				nm_blueprint.pools[i].name,
 				d->name);
 		if (checksz) {
-			uint64_t poolsz = p[i].num * p[i].size;
+			uint64_t poolsz = (uint64_t)p[i].num * p[i].size;
 			if (memtotal < poolsz) {
 				nm_prerr("%s: request too large", d->pools[i].name);
 				err = ENOMEM;
-				goto error;
+				goto error_rel_id;
 			}
 			memtotal -= poolsz;
 		}
@@ -1747,7 +1747,8 @@ _netmap_mem_private_new(size_t size, struct netmap_obj_params *p, int grp_id,
 		if (n) {
 			if (netmap_verbose) {
 				nm_prinf("%s: adding %llu more buffers",
-						d->pools[NETMAP_BUF_POOL].name, n);
+				    d->pools[NETMAP_BUF_POOL].name,
+				    (unsigned long long)n);
 			}
 			d->params[NETMAP_BUF_POOL].num += n;
 		}
@@ -1757,14 +1758,15 @@ _netmap_mem_private_new(size_t size, struct netmap_obj_params *p, int grp_id,
 
 	err = netmap_mem_config(d);
 	if (err)
-		goto error_rel_id;
+		goto error_destroy_lock;
 
 	d->flags &= ~NETMAP_MEM_FINALIZED;
 
 	return d;
 
-error_rel_id:
+error_destroy_lock:
 	NMA_LOCK_DESTROY(d);
+error_rel_id:
 	nm_mem_release_id(d);
 error_free:
 	nm_os_free(d);
@@ -2030,7 +2032,7 @@ netmap_mem2_rings_create(struct netmap_mem_d *nmd, struct netmap_adapter *na)
 			u_int len, ndesc;
 
 			if (!netmap_mem_ring_needed(kring)) {
-				/* uneeded, or already created by somebody else */
+				/* unneeded, or already created by somebody else */
 				if (netmap_debug & NM_DEBUG_MEM)
 					nm_prinf("NOT creating ring %s (ring %p, users %d neekring %d)",
 						kring->name, ring, kring->users, kring->nr_kflags & NKR_NEEDRING);
@@ -2434,10 +2436,11 @@ netmap_mem_ext_create(uint64_t usrptr, struct nmreq_pools_info *pi, int *perror)
 	os = NULL; /* pass ownership */
 
 	clust = nm_os_extmem_nextpage(nme->os);
-	off = 0;
 	for (i = 0; i < NETMAP_POOLS_NR; i++) {
 		struct netmap_obj_pool *p = &nme->up.pools[i];
 		struct netmap_obj_params *o = &nme->up.params[i];
+
+		off = 0;
 
 		p->_objsize = o->size;
 		p->_clustsize = o->size;
@@ -2502,6 +2505,14 @@ netmap_mem_ext_create(uint64_t usrptr, struct nmreq_pools_info *pi, int *perror)
 		p->objtotal = j;
 		p->numclusters = p->objtotal;
 		p->memtotal = j * (size_t)p->_objsize;
+		if (p->memtotal & (PAGE_SIZE - 1)) {
+			// make sure that the objects of the next pool start page-aligned
+			p->memtotal = (p->memtotal & ~(PAGE_SIZE - 1)) + PAGE_SIZE;
+			if (nr_pages > 0) {
+				clust = nm_os_extmem_nextpage(nme->os);
+				nr_pages--;
+			}
+		}
 		nm_prdis("%d memtotal %zu", j, p->memtotal);
 	}
 

@@ -156,11 +156,15 @@ veth_netmap_reg(struct netmap_adapter *na, int onoff)
 		return 0;
 	}
 	if (onoff) {
-		vna->peer->peer_ref = 0;
-		netmap_adapter_put(na);
+		if (vna->peer->peer_ref) {
+			vna->peer->peer_ref = 0;
+			netmap_adapter_put(na);
+		}
 	} else {
-		netmap_adapter_get(na);
-		vna->peer->peer_ref = 1;
+		if (!vna->peer->peer_ref) {
+			netmap_adapter_get(na);
+			vna->peer->peer_ref = 1;
+		}
 	}
 
 	return 0;
@@ -238,7 +242,7 @@ veth_netmap_attach(struct ifnet *ifp)
 	na.nm_dtor = veth_netmap_dtor;
 	na.num_tx_rings = na.num_rx_rings = 1;
 	netmap_attach_ext(&na, sizeof(struct netmap_veth_adapter),
-			0 /* do not ovveride reg */);
+			0 /* do not override reg */);
 }
 
 /* end of file */

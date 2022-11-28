@@ -58,7 +58,7 @@ ports attached to the switch)
 
 #if defined(__FreeBSD__)
 #include <sys/cdefs.h> /* prerequisite */
-__FBSDID("$FreeBSD: head/sys/dev/netmap/netmap.c 257176 2013-10-26 17:58:36Z glebius $");
+__FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 #include <sys/errno.h>
@@ -951,7 +951,7 @@ nm_bdg_ctl_polling_stop(struct netmap_adapter *na)
 	bps->configured = false;
 	nm_os_free(bps);
 	bna->na_polling_state = NULL;
-	/* reenable interrupts */
+	/* re-enable interrupts */
 	nma_intr_enable(bna->hwna, 1);
 	return 0;
 }
@@ -1520,7 +1520,7 @@ netmap_bwrap_krings_create_common(struct netmap_adapter *na)
 	for_rx_tx(t) {
 		for (i = 0; i < netmap_all_rings(hwna, t); i++) {
 			NMR(hwna, t)[i]->users++;
-			/* this to prevent deleation of the rings through
+			/* this to prevent deletion of the rings through
 			 * our krings, instead of through the hwna ones */
 			NMR(na, t)[i]->nr_kflags |= NKR_NEEDRING;
 		}
@@ -1657,7 +1657,7 @@ put_out:
  * On attach, it needs to provide a fake netmap_priv_d structure and
  * perform a netmap_do_regif() on the bwrap. This will put both the
  * bwrap and the hwna in netmap mode, with the netmap rings shared
- * and cross linked. Moroever, it will start intercepting interrupts
+ * and cross linked. Moreover, it will start intercepting interrupts
  * directed to hwna.
  */
 static int
@@ -1828,7 +1828,7 @@ netmap_init_bridges(void)
 #ifdef CONFIG_NET_NS
 	return netmap_bns_register();
 #else
-	nm_bridges = netmap_init_bridges2(NM_BRIDGES);
+	nm_bridges = netmap_init_bridges2(vale_max_bridges);
 	if (nm_bridges == NULL)
 		return ENOMEM;
 	return 0;
@@ -1841,6 +1841,6 @@ netmap_uninit_bridges(void)
 #ifdef CONFIG_NET_NS
 	netmap_bns_unregister();
 #else
-	netmap_uninit_bridges2(nm_bridges, NM_BRIDGES);
+	netmap_uninit_bridges2(nm_bridges, vale_max_bridges);
 #endif
 }

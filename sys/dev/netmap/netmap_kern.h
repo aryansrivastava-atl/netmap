@@ -28,7 +28,7 @@
  */
 
 /*
- * $FreeBSD: head/sys/dev/netmap/netmap_kern.h 238985 2012-08-02 11:59:43Z luigi $
+ * $FreeBSD$
  *
  * The header contains the definitions of constants and function
  * prototypes used only in kernelspace.
@@ -294,7 +294,7 @@ struct nm_bridge;
 struct netmap_priv_d;
 struct nm_bdg_args;
 
-/* os-specific NM_SELINFO_T initialzation/destruction functions */
+/* os-specific NM_SELINFO_T initialization/destruction functions */
 int nm_os_selinfo_init(NM_SELINFO_T *, const char *name);
 void nm_os_selinfo_uninit(NM_SELINFO_T *);
 
@@ -485,7 +485,7 @@ struct netmap_kring {
 	struct netmap_adapter *na;
 
 	/* the adapter that wants to be notified when this kring has
-	 * new slots avaialable. This is usually the same as the above,
+	 * new slots available. This is usually the same as the above,
 	 * but wrappers may let it point to themselves
 	 */
 	struct netmap_adapter *notify_na;
@@ -562,7 +562,7 @@ struct netmap_kring {
 	 */
 	uint64_t hwbuf_len;
 
-	/* required aligment (in bytes) for the buffers used by this ring.
+	/* required alignment (in bytes) for the buffers used by this ring.
 	 * Netmap buffers are aligned to cachelines, which should suffice
 	 * for most NICs. If the user is passing offsets, though, we need
 	 * to check that the resulting buf address complies with any
@@ -570,7 +570,7 @@ struct netmap_kring {
 	 */
 	uint64_t buf_align;
 
-	/* harware specific logic for the selection of the hwbuf_len */
+	/* hardware specific logic for the selection of the hwbuf_len */
 	int (*nm_bufcfg)(struct netmap_kring *kring, uint64_t target);
 
 	int (*save_notify)(struct netmap_kring *kring, int flags);
@@ -709,7 +709,7 @@ struct nm_config_info {
 
 /*
  * default type for the magic field.
- * May be overriden in glue code.
+ * May be overridden in glue code.
  */
 #ifndef NM_OS_MAGIC
 #define NM_OS_MAGIC uint32_t
@@ -827,12 +827,12 @@ struct netmap_adapter {
 	 *      (l) and kring->buf_align fields. The l value is most important
 	 *      for RX rings, where we want to disallow writes outside of the
 	 *      netmap buffer. The l value must be computed taking into account
-	 *      the stipulated max_offset (o), possibily increased if there are
-	 *      alignemnt constrains, the maxframe (m), if known, and the
+	 *      the stipulated max_offset (o), possibly increased if there are
+	 *      alignment constraints, the maxframe (m), if known, and the
 	 *      current NETMAP_BUF_SIZE (b) of the memory region used by the
 	 *      adapter. We want the largest supported l such that o + l <= b.
 	 *      If m is known to be <= b - o, the callback may also choose the
-	 *      largest l <= b, ignoring the offset.  The buf_align field is
+	 *      largest l <= m, ignoring the offset.  The buf_align field is
 	 *      most important for TX rings when there are offsets.  The user
 	 *      will see this value in the ring->buf_align field.  Misaligned
 	 *      offsets will cause the corresponding packets to be silently
@@ -1155,6 +1155,7 @@ struct netmap_bwrap_adapter {
 	struct netmap_vp_adapter *saved_na_vp;
 	int (*nm_intr_notify)(struct netmap_kring *kring, int flags);
 };
+int nm_is_bwrap(struct netmap_adapter *na);
 int nm_bdg_polling(struct nmreq_header *hdr);
 
 int netmap_bdg_attach(struct nmreq_header *hdr, void *auth_token);
@@ -1414,35 +1415,25 @@ nm_native_on(struct netmap_adapter *na)
 static inline struct netmap_kring *
 netmap_kring_on(struct netmap_adapter *na, u_int q, enum txrx t)
 {
-        struct netmap_kring *kring = NULL;
+	struct netmap_kring *kring = NULL;
 
-        if (!nm_native_on(na))
-                return NULL;
+	if (!nm_native_on(na))
+		return NULL;
 
-        if (t == NR_RX && q < na->num_rx_rings)
-                kring = na->rx_rings[q];
-        else if (t == NR_TX && q < na->num_tx_rings)
-                kring = na->tx_rings[q];
-        else
-                return NULL;
+	if (t == NR_RX && q < na->num_rx_rings)
+		kring = na->rx_rings[q];
+	else if (t == NR_TX && q < na->num_tx_rings)
+		kring = na->tx_rings[q];
+	else
+		return NULL;
 
-        return (kring->nr_mode == NKR_NETMAP_ON) ? kring : NULL;
+	return (kring->nr_mode == NKR_NETMAP_ON) ? kring : NULL;
 }
 
 static inline int
 nm_iszombie(struct netmap_adapter *na)
 {
 	return na == NULL || (na->na_flags & NAF_ZOMBIE);
-}
-
-static inline void
-nm_update_hostrings_mode(struct netmap_adapter *na)
-{
-	/* Process nr_mode and nr_pending_mode for host rings. */
-	na->tx_rings[na->num_tx_rings]->nr_mode =
-		na->tx_rings[na->num_tx_rings]->nr_pending_mode;
-	na->rx_rings[na->num_rx_rings]->nr_mode =
-		na->rx_rings[na->num_rx_rings]->nr_pending_mode;
 }
 
 void nm_set_native_flags(struct netmap_adapter *);
@@ -1569,11 +1560,14 @@ int netmap_get_vale_na(struct nmreq_header *hdr, struct netmap_adapter **na,
 void *netmap_vale_create(const char *bdg_name, int *return_status);
 int netmap_vale_destroy(const char *bdg_name, void *auth_token);
 
+extern unsigned int vale_max_bridges;
+
 #else /* !WITH_VALE */
 #define netmap_bdg_learning(_1, _2, _3, _4)	0
 #define	netmap_get_vale_na(_1, _2, _3, _4)	0
 #define netmap_bdg_create(_1, _2)	NULL
 #define netmap_bdg_destroy(_1, _2)	0
+#define vale_max_bridges		1
 #endif /* !WITH_VALE */
 
 #ifdef WITH_PIPES
@@ -1617,7 +1611,7 @@ extern struct nm_bridge *nm_bridges;
 #define netmap_bns_get()
 #define netmap_bns_put(_1)
 #define netmap_bns_getbridges(b, n) \
-	do { *b = nm_bridges; *n = NM_BRIDGES; } while (0)
+	do { *b = nm_bridges; *n = vale_max_bridges; } while (0)
 #endif
 
 /* Various prototypes */
@@ -1674,7 +1668,6 @@ int netmap_adapter_put(struct netmap_adapter *na);
 #define NETMAP_BUF_BASE(_na)	((_na)->na_lut.lut[0].vaddr)
 #define NETMAP_BUF_SIZE(_na)	((_na)->na_lut.objsize)
 extern int netmap_no_pendintr;
-extern int netmap_mitigate;
 extern int netmap_verbose;
 #ifdef CONFIG_NETMAP_DEBUG
 extern int netmap_debug;		/* for debugging */
@@ -1682,7 +1675,7 @@ extern int netmap_debug;		/* for debugging */
 #define netmap_debug (0)
 #endif /* !CONFIG_NETMAP_DEBUG */
 enum {                                  /* debug flags */
-	NM_DEBUG_ON = 1,		/* generic debug messsages */
+	NM_DEBUG_ON = 1,		/* generic debug messages */
 	NM_DEBUG_HOST = 0x2,            /* debug host stack */
 	NM_DEBUG_RXSYNC = 0x10,         /* debug on rxsync/txsync */
 	NM_DEBUG_TXSYNC = 0x20,
@@ -1696,7 +1689,6 @@ enum {                                  /* debug flags */
 };
 
 extern int netmap_txsync_retry;
-extern int netmap_flags;
 extern int netmap_generic_hwcsum;
 extern int netmap_generic_mit;
 extern int netmap_generic_ringsize;

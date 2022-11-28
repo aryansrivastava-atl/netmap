@@ -176,6 +176,7 @@ struct nmport_extmem_from_file_cleanup_d {
 void nmport_extmem_from_file_cleanup(struct nmport_cleanup_d *c,
 		struct nmport_d *d)
 {
+	(void)d;
 	struct nmport_extmem_from_file_cleanup_d *cc =
 		(struct nmport_extmem_from_file_cleanup_d *)c;
 
@@ -197,6 +198,7 @@ nmport_extmem_from_file(struct nmport_d *d, const char *fname)
 		errno = ENOMEM;
 		goto fail;
 	}
+	clnup->up.cleanup = NULL;
 
 	fd = open(fname, O_RDWR);
 	if (fd < 0) {
@@ -214,6 +216,7 @@ nmport_extmem_from_file(struct nmport_d *d, const char *fname)
 		goto fail;
 	}
 	close(fd);
+	fd = -1;
 
 	clnup->p = p;
 	clnup->size = mapsize;
@@ -229,7 +232,7 @@ fail:
 	if (fd >= 0)
 		close(fd);
 	if (clnup != NULL) {
-		if (clnup->p != MAP_FAILED)
+		if (clnup->up.cleanup != NULL)
 			nmport_pop_cleanup(d);
 		else
 			nmctx_free(ctx, clnup);
@@ -657,7 +660,7 @@ nmport_mmap(struct nmport_d *d)
 	struct nmctx *ctx = d->ctx;
 	struct nmem_d *m = NULL;
 	u_int num_tx, num_rx;
-	int i;
+	unsigned int i;
 
 	if (d->mmap_done) {
 		errno = EINVAL;
@@ -714,7 +717,7 @@ nmport_mmap(struct nmport_d *d)
 	num_tx = d->reg.nr_tx_rings + d->nifp->ni_host_tx_rings;
 	for (i = 0; i < num_tx && !d->nifp->ring_ofs[i]; i++)
 		;
-	d->first_tx_ring = i;
+	d->cur_tx_ring = d->first_tx_ring = i;
 	for ( ; i < num_tx && d->nifp->ring_ofs[i]; i++)
 		;
 	d->last_tx_ring = i - 1;
@@ -722,7 +725,7 @@ nmport_mmap(struct nmport_d *d)
 	num_rx = d->reg.nr_rx_rings + d->nifp->ni_host_rx_rings;
 	for (i = 0; i < num_rx && !d->nifp->ring_ofs[i + num_tx]; i++)
 		;
-	d->first_rx_ring = i;
+	d->cur_rx_ring = d->first_rx_ring = i;
 	for ( ; i < num_rx && d->nifp->ring_ofs[i + num_tx]; i++)
 		;
 	d->last_rx_ring = i - 1;

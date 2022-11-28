@@ -255,6 +255,8 @@ nmreq_register_decode(const char **pifname, struct nmreq_register *r, struct nmc
 	uint16_t nr_ringid;
 	uint64_t nr_flags;
 
+	errno = 0;
+
 	/* fill the request */
 
 	p_state = P_START;
@@ -601,10 +603,9 @@ nmreq_options_decode(const char *opt, struct nmreq_opt_parser parsers[],
 struct nmreq_option *
 nmreq_find_option(struct nmreq_header *h, uint32_t t)
 {
-	struct nmreq_option *o;
+	struct nmreq_option *o = NULL;
 
-	for (o = (struct nmreq_option *)h->nr_options; o != NULL;
-			o = (struct nmreq_option *)o->nro_next) {
+	nmreq_foreach_option(h, o) {
 		if (o->nro_reqtype == t)
 			break;
 	}
@@ -619,7 +620,7 @@ nmreq_remove_option(struct nmreq_header *h, struct nmreq_option *o)
 	for (nmo = (struct nmreq_option **)&h->nr_options; *nmo != NULL;
 	    nmo = (struct nmreq_option **)&(*nmo)->nro_next) {
 		if (*nmo == o) {
-			*((uint64_t *)(*nmo)) = o->nro_next;
+			*((uint64_t *)nmo) = o->nro_next;
 			o->nro_next = (uint64_t)(uintptr_t)NULL;
 			break;
 		}
@@ -631,8 +632,14 @@ nmreq_free_options(struct nmreq_header *h)
 {
 	struct nmreq_option *o, *next;
 
-	for (o = (struct nmreq_option *)h->nr_options; o != NULL; o = next) {
-		next = (struct nmreq_option *)o->nro_next;
+	/*
+	 * Note: can't use nmreq_foreach_option() here; it frees the
+	 * list as it's walking and nmreq_foreach_option() isn't
+	 * modification-safe.
+	 */
+	for (o = (struct nmreq_option *)(uintptr_t)h->nr_options; o != NULL;
+	    o = next) {
+		next = (struct nmreq_option *)(uintptr_t)o->nro_next;
 		free(o);
 	}
 }

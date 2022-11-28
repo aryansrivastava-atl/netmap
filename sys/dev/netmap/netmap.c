@@ -193,7 +193,7 @@ ports attached to the switch)
  * 	      always attached to a bridge.
  * 	      Persistent VALE ports must must be created separately, and i
  * 	      then attached like normal NICs. The NIOCREGIF we are examining
- * 	      will find them only if they had previosly been created and
+ * 	      will find them only if they had previously been created and
  * 	      attached (see VALE_CTL below).
  *
  * 	- netmap_pipe_adapter 	      [netmap_pipe.c]
@@ -541,7 +541,7 @@ SYSBEGIN(main_init);
 
 SYSCTL_DECL(_dev_netmap);
 SYSCTL_NODE(_dev, OID_AUTO, netmap, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
-    "Netmap args");
+		"Netmap args");
 SYSCTL_INT(_dev_netmap, OID_AUTO, verbose,
 		CTLFLAG_RW, &netmap_verbose, 0, "Verbose mode");
 #ifdef CONFIG_NETMAP_DEBUG
@@ -619,6 +619,10 @@ netmap_set_all_rings(struct netmap_adapter *na, int stopped)
 	if (!nm_netmap_on(na))
 		return;
 
+	if (netmap_verbose) {
+		nm_prinf("%s: %sable all rings", na->name,
+		    (stopped ? "dis" : "en"));
+	}
 	for_rx_tx(t) {
 		for (i = 0; i < netmap_real_rings(na, t); i++) {
 			netmap_set_ring(na, i, t, stopped);
@@ -758,6 +762,10 @@ int
 netmap_update_config(struct netmap_adapter *na)
 {
 	struct nm_config_info info;
+
+	if (na->ifp && !nm_is_bwrap(na)) {
+		strlcpy(na->name, na->ifp->if_xname, sizeof(na->name));
+	}
 
 	bzero(&info, sizeof(info));
 	if (na->nm_config == NULL ||
@@ -1000,6 +1008,22 @@ netmap_mem_drop(struct netmap_adapter *na)
 	}
 }
 
+static void
+netmap_update_hostrings_mode(struct netmap_adapter *na)
+{
+	enum txrx t;
+	struct netmap_kring *kring;
+	int i;
+
+	for_rx_tx(t) {
+		for (i = nma_get_nrings(na, t);
+		     i < netmap_real_rings(na, t); i++) {
+			kring = NMR(na, t)[i];
+			kring->nr_mode = kring->nr_pending_mode;
+		}
+	}
+}
+
 /*
  * Undo everything that was done in netmap_do_regif(). In particular,
  * call nm_register(ifp,0) to stop netmap mode on the interface and
@@ -1029,8 +1053,12 @@ netmap_do_unregif(struct netmap_priv_d *priv)
 	}
 #endif
 
+	netmap_update_hostrings_mode(na);
+
 	if (na->active_fds <= 0 || nm_kring_pending(priv)) {
+		netmap_set_all_rings(na, NM_KR_LOCKED);
 		na->nm_register(na, 0);
+		netmap_set_all_rings(na, 0);
 	}
 
 	/* delete rings and buffers that are no longer needed */
@@ -1070,7 +1098,7 @@ netmap_do_unregif(struct netmap_priv_d *priv)
 		}
 	}
 
-	/* possibily decrement counter of tx_si/rx_si users */
+	/* possibly decrement counter of tx_si/rx_si users */
 	netmap_unset_ringid(priv);
 	/* delete the nifp */
 	netmap_mem_if_delete(na, priv->np_nifp);
@@ -1152,7 +1180,7 @@ netmap_dtor(void *data)
  *   they will be forwarded to the hw TX rings, saving the application
  *   from doing the same task in user-space.
  *
- * Transparent fowarding can be enabled per-ring, by setting the NR_FORWARD
+ * Transparent forwarding can be enabled per-ring, by setting the NR_FORWARD
  * flag, or globally with the netmap_fwd sysctl.
  *
  * The transfer NIC --> host is relatively easy, just encapsulate
@@ -1649,7 +1677,7 @@ netmap_get_na(struct nmreq_header *hdr,
 	netmap_adapter_get(ret);
 
 	/*
-	 * if the adapter supports the host rings and it is not alread open,
+	 * if the adapter supports the host rings and it is not already open,
 	 * try to set the number of host rings as requested by the user
 	 */
 	if (((*na)->na_flags & NAF_HOST_RINGS) && (*na)->active_fds == 0) {
@@ -2073,7 +2101,7 @@ netmap_krings_get(struct netmap_priv_d *priv)
 			priv->np_qlast[NR_RX]);
 
 	/* first round: check that all the requested rings
-	 * are neither alread exclusively owned, nor we
+	 * are neither already exclusively owned, nor we
 	 * want exclusive ownership when they are already in use
 	 */
 	foreach_selected_ring(priv, t, i, kring) {
@@ -2369,7 +2397,7 @@ netmap_offsets_init(struct netmap_priv_d *priv, struct nmreq_header *hdr)
 			if ((kring->offset_mask & mask) != mask ||
 			     kring->offset_max < max_offset) {
 				if (netmap_verbose)
-					nm_prinf("%s: cannot decrease"
+					nm_prinf("%s: cannot increase"
 						 "offset mask and/or max"
 						 "(current: mask=%llx,max=%llu",
 							kring->name,
@@ -2412,6 +2440,12 @@ out:
 
 }
 
+
+/* set the hardware buffer length in each one of the newly opened rings
+ * (hwbuf_len field in the kring struct). The purpose it to select
+ * the maximum supported input buffer length that will not cause writes
+ * outside of the available space, even when offsets are in use.
+ */
 static int
 netmap_compute_buf_len(struct netmap_priv_d *priv)
 {
@@ -2421,32 +2455,44 @@ netmap_compute_buf_len(struct netmap_priv_d *priv)
 	int error = 0;
 	unsigned mtu = 0;
 	struct netmap_adapter *na = priv->np_na;
-	uint64_t target, maxframe;
-
-	if (na->ifp != NULL)
-		mtu = nm_os_ifnet_mtu(na->ifp);
+	uint64_t target;
 
 	foreach_selected_ring(priv, t, i, kring) {
-
+		/* rings that are already active have their hwbuf_len
+		 * already set and we cannot change it.
+		 */
 		if (kring->users > 1)
 			continue;
 
+		/* For netmap buffers which are not shared among several ring
+		 * slots (the normal case), the available space is the buf size
+		 * minus the max offset declared by the user at open time.  If
+		 * the user plans to have several slots pointing to different
+		 * offsets into the same large buffer, she must also declare a
+		 * "minium gap" between two such consecutive offsets. In this
+		 * case the user-declared 'offset_gap' is taken as the
+		 * available space and offset_max is ignored.
+		 */
+
+		/* start with the normal case (unshared buffers) */
 		target = NETMAP_BUF_SIZE(kring->na) -
 			kring->offset_max;
+		/* if offset_gap is zero, the user does not intend to use
+		 * shared buffers. In this case the minimum gap between
+		 * two consective offsets into the same buffer can be
+		 * assumed to be equal to the buffer size. In this way
+		 * offset_gap always contains the available space ignoring
+		 * offset_max. This may be used by drivers of NICs that
+		 * are guaranteed to never write more than MTU bytes, even
+		 * if the input buffer is larger: if the MTU is less
+		 * than the target they can set hwbuf_len to offset_gap.
+		 */
 		if (!kring->offset_gap)
 			kring->offset_gap =
 				NETMAP_BUF_SIZE(kring->na);
+
 		if (kring->offset_gap < target)
 			target = kring->offset_gap;
-
-		if (mtu) {
-			maxframe = mtu + ETH_HLEN +
-				ETH_FCS_LEN + VLAN_HLEN;
-			if (maxframe < target) {
-				target = kring->offset_gap;
-			}
-		}
-
 		error = kring->nm_bufcfg(kring, target);
 		if (error)
 			goto out;
@@ -2628,7 +2674,7 @@ netmap_do_regif(struct netmap_priv_d *priv, struct netmap_adapter *na,
 	if (error)
 		goto err_rel_excl;
 
-	/* compute and validate the buf lenghts */
+	/* compute and validate the buf lengths */
 	error = netmap_compute_buf_len(priv);
 	if (error)
 		goto err_rel_excl;
@@ -2640,10 +2686,17 @@ netmap_do_regif(struct netmap_priv_d *priv, struct netmap_adapter *na,
 		goto err_rel_excl;
 	}
 
-	if (nm_kring_pending(priv)) {
+	/* make sure we don't call na->nm_register() when only
+	 * host rings are changing mode
+	 */
+	netmap_update_hostrings_mode(na);
+
+	if (na->active_fds == 0 || nm_kring_pending(priv)) {
 		/* Some kring is switching mode, tell the adapter to
 		 * react on this. */
+		netmap_set_all_rings(na, NM_KR_LOCKED);
 		error = na->nm_register(na, 1);
+		netmap_set_all_rings(na, 0);
 		if (error)
 			goto err_del_if;
 	}
@@ -2665,6 +2718,7 @@ err_del_if:
 	netmap_mem_if_delete(na, nifp);
 err_rel_excl:
 	netmap_krings_put(priv);
+	netmap_update_hostrings_mode(na);
 	netmap_mem_rings_delete(na);
 err_del_krings:
 	if (na->active_fds == 0)
@@ -2750,7 +2804,7 @@ netmap_ioctl(struct netmap_priv_d *priv, u_long cmd, caddr_t data,
 		}
 
 		/* Make a kernel-space copy of the user-space nr_body.
-		 * For convenince, the nr_body pointer and the pointers
+		 * For convenience, the nr_body pointer and the pointers
 		 * in the options list will be replaced with their
 		 * kernel-space counterparts. The original pointers are
 		 * saved internally and later restored by nmreq_copyout
@@ -2871,6 +2925,8 @@ netmap_ioctl(struct netmap_priv_d *priv, u_long cmd, caddr_t data,
 						&nifp->ni_bufs_head, req->nr_extra_bufs);
 					if (netmap_verbose)
 						nm_prinf("got %d extra buffers", req->nr_extra_bufs);
+				} else {
+					nifp->ni_bufs_head = 0;
 				}
 				req->nr_offset = netmap_mem_if_offset(na->nm_mem, nifp);
 
@@ -3283,6 +3339,7 @@ nmreq_opt_size_by_type(uint32_t nro_reqtype, uint64_t nro_size)
 		break;
 	case NETMAP_REQ_OPT_OFFSETS:
 		rv = sizeof(struct nmreq_opt_offsets);
+		break;
 	}
 	/* subtract the common header */
 	return rv - sizeof(struct nmreq_option);
@@ -3342,7 +3399,7 @@ nmreq_opt_size_by_type(uint32_t nro_reqtype, uint64_t nro_size)
  * The list of options is copied and the pointers adjusted. The
  * original pointers are saved before the option they belonged.
  *
- * The option table has an entry for every availabe option.  Entries
+ * The option table has an entry for every available option.  Entries
  * for options that have not been passed contain NULL.
  *
  */
@@ -3354,7 +3411,6 @@ nmreq_copyin(struct nmreq_header *hdr, int nr_body_is_user)
 	int error = 0;
 	char *ker = NULL, *p;
 	struct nmreq_option **next, *src, **opt_tab;
-	struct nmreq_option buf;
 	uint64_t *ptrs;
 
 	if (hdr->nr_reserved) {
@@ -3384,29 +3440,14 @@ nmreq_copyin(struct nmreq_header *hdr, int nr_body_is_user)
 		goto out_err;
 	}
 
-	bufsz = 2 * sizeof(void *) + rqsz +
-		NETMAP_REQ_OPT_MAX * sizeof(opt_tab);
-	/* compute the size of the buf below the option table.
-	 * It must contain a copy of every received option structure.
-	 * For every option we also need to store a copy of the user
-	 * list pointer.
+	/*
+	 * The buffer size must be large enough to store the request body,
+	 * all the possible options and the additional user pointers
+	 * (2+NETMAP_REQ_OPT_MAX). Note that the maximum size of body plus
+	 * options can not exceed NETMAP_REQ_MAXSIZE;
 	 */
-	optsz = 0;
-	for (src = (struct nmreq_option *)(uintptr_t)hdr->nr_options; src;
-	     src = (struct nmreq_option *)(uintptr_t)buf.nro_next)
-	{
-		error = copyin(src, &buf, sizeof(*src));
-		if (error)
-			goto out_err;
-		optsz += sizeof(*src);
-		optsz += nmreq_opt_size_by_type(buf.nro_reqtype, buf.nro_size);
-		if (rqsz + optsz > NETMAP_REQ_MAXSIZE) {
-			error = EMSGSIZE;
-			goto out_err;
-		}
-		bufsz += sizeof(void *);
-	}
-	bufsz += optsz;
+	bufsz = (2 + NETMAP_REQ_OPT_MAX) * sizeof(void *) + NETMAP_REQ_MAXSIZE +
+		NETMAP_REQ_OPT_MAX * sizeof(opt_tab);
 
 	ker = nm_os_malloc(bufsz);
 	if (ker == NULL) {
@@ -3444,6 +3485,7 @@ nmreq_copyin(struct nmreq_header *hdr, int nr_body_is_user)
 		error = copyin(src, opt, sizeof(*src));
 		if (error)
 			goto out_restore;
+		rqsz += sizeof(*src);
 		/* make a copy of the user next pointer */
 		*ptrs = opt->nro_next;
 		/* overwrite the user pointer with the in-kernel one */
@@ -3487,6 +3529,14 @@ nmreq_copyin(struct nmreq_header *hdr, int nr_body_is_user)
 		/* copy the option body */
 		optsz = nmreq_opt_size_by_type(opt->nro_reqtype,
 						opt->nro_size);
+		/* check optsz and nro_size to avoid for possible integer overflows of rqsz */
+		if ((optsz > NETMAP_REQ_MAXSIZE) || (opt->nro_size > NETMAP_REQ_MAXSIZE)
+				|| (rqsz + optsz > NETMAP_REQ_MAXSIZE)
+				|| (optsz > 0 && rqsz + optsz <= rqsz)) {
+			error = EMSGSIZE;
+			goto out_restore;
+		}
+		rqsz += optsz;
 		if (optsz) {
 			/* the option body follows the option header */
 			error = copyin(src + 1, p, optsz);
@@ -4190,12 +4240,16 @@ netmap_hw_krings_create(struct netmap_adapter *na)
 void
 netmap_detach(struct ifnet *ifp)
 {
-	struct netmap_adapter *na = NA(ifp);
-
-	if (!na)
-		return;
+	struct netmap_adapter *na;
 
 	NMG_LOCK();
+
+	if (!NM_NA_VALID(ifp)) {
+		NMG_UNLOCK();
+		return;
+	}
+
+	na = NA(ifp);
 	netmap_set_all_rings(na, NM_KR_LOCKED);
 	/*
 	 * if the netmap adapter is not native, somebody
@@ -4503,7 +4557,6 @@ nm_set_native_flags(struct netmap_adapter *na)
 
 	na->na_flags |= NAF_NETMAP_ON;
 	nm_os_onenter(ifp);
-	nm_update_hostrings_mode(na);
 }
 
 void
@@ -4517,7 +4570,6 @@ nm_clear_native_flags(struct netmap_adapter *na)
 		return;
 	}
 
-	nm_update_hostrings_mode(na);
 	nm_os_onexit(ifp);
 
 	na->na_flags &= ~NAF_NETMAP_ON;
@@ -4603,7 +4655,9 @@ netmap_init(void)
 	if (error)
 		goto fail;
 
+#if !defined(__FreeBSD__) || defined(KLD_MODULE)
 	nm_prinf("netmap: loaded module");
+#endif
 	return (0);
 fail:
 	netmap_fini();

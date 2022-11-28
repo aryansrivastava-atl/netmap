@@ -112,8 +112,8 @@ subsys enable null
 subsys enable ptnetmap
 
 # available drivers
-driver_avail="r8169.c virtio_net.c forcedeth.c veth.c \
-	e1000 e1000e igb ixgbe ixgbevf i40e vmxnet3 mlx5 octeon ipt_netmap"
+driver_avail="stmmac r8169.c virtio_net.c forcedeth.c veth.c \
+	e1000 e1000e igb ixgbe ixgbevf ice i40e vmxnet3 mlx5 octeon ipt_netmap"
 # enabled drivers (bitfield)
 driver=
 drv()
@@ -135,6 +135,7 @@ edrv enable igb
 edrv enable ixgbe
 edrv enable ixgbevf
 edrv enable i40e
+edrv enable ice
 edrv enable mlx5
 edrv enable virtio_net.c
 
@@ -301,7 +302,7 @@ Available options:
   --help                       print this message
   --kernel-dir=                path to configured kernel directory
   --kernel-sources=            path to full kernel sources
-  --kernel-version=	       specifiy the kernel version
+  --kernel-version=	       specify the kernel version
   				(assuming everything is in the default place)
   --kernel-opts=	       additional options to pass to kernel make
                                (you can call this several times)
@@ -577,7 +578,7 @@ EOF
 }
 
 configh=netmap_linux_config.h
-# succes/failure actions are expected to write some macros
+# success/failure actions are expected to write some macros
 # in netma_linux_config.h. The following functions can be
 # used to simplify the task.
 
@@ -804,6 +805,42 @@ EOF
 fi
 lin_ver=$(awk '/LINUX_VERSION_CODE/ { printf "%03x%02x", $3/256, $3%256}' "$version_hdr")
 
+#################################################
+# preliminary build tests
+#################################################
+
+reset_tests
+
+broken_buildsystem() {
+	error <<EOF
+It looks like we are not able to build kernel modules for the current
+configuration. Please check 'config.log' for possible clues.
+EOF
+}
+
+  add_test true broken_buildsystem < /dev/null
+
+DISABLED_WARNINGS="unused-but-set-variable attributes packed-not-aligned \
+	stringop-truncation missing-attributes format-truncation \
+	maybe-uninitialized unused-variable unused-label \
+	implicit-fallthrough"
+REC_DISABLED_WARNINGS=
+disable_warning() {
+	REC_DISABLED_WARNINGS="$1 $REC_DISABLED_WARNINGS"
+}
+
+i=1
+for w in $DISABLED_WARNINGS; do
+	add_named_test "__warn__$i" "disable_warning $w" < /dev/null
+	echo "CFLAGS___warn__$i.o = -Wno-error=$w" >> $TMPDIR/extra.mk
+	i=$(($i+1))
+done
+
+  message " NOTE  " <<EOF
+Running some preliminary tests to customize the build environment.
+EOF
+run_preliminary_tests
+
 # create the versions file
 rm -f extdrv-versions.mak
 for dv in $(echo "$versions" | sed 's/,/ /g'); do
@@ -816,6 +853,8 @@ for dv in $(echo "$versions" | sed 's/,/ /g'); do
 done
 
 replace_vars $SRCDIR/default-config.mak.in_ > default-config.mak
+replace_vars $SRCDIR/intel-fix.sh_ > intel-fix.sh
+chmod +x intel-fix.sh
 
 ###############################################################
 # Makefile creation
@@ -883,7 +922,7 @@ EOF
 		message " NOTE  " <<EOF
 We are trying to download the original sources for driver
 $d using the following command:
-  
+
   $drv_fetch
 
 If this fails, please download the above file and put it
@@ -927,12 +966,12 @@ EOF
 Since the generic driver has been disabled, the corresponding NICs
 will NOT be usable by netmap.
 EOF
-				fi 
+				fi
 			} | warning
 			else
 				src=$(cd $src; pwd)
 				src_found=1
-			fi 
+			fi
 			src_checked=1
 		fi
 		drv_kernel_src=
@@ -984,41 +1023,6 @@ done
 update_drivers
 
 #################################################
-# preliminary build tests
-#################################################
-
-reset_tests
-
-broken_buildsystem() {
-	error <<EOF
-It looks like we are not able to build kernel modules for the current
-configuration. Please check 'config.log' for possible clues.
-EOF
-}
-
-  add_test true broken_buildsystem < /dev/null
-
-DISABLED_WARNINGS="unused-but-set-variable attributes packed-not-aligned \
-	stringop-truncation missing-attributes format-truncation \
-	maybe-uninitialized unused-variable unused-label"
-REC_DISABLED_WARNINGS=
-disable_warning() {
-	REC_DISABLED_WARNINGS="$1 $REC_DISABLED_WARNINGS"
-}
-
-i=1
-for w in $DISABLED_WARNINGS; do
-	add_named_test "__warn__$i" "disable_warning $w" < /dev/null
-	echo "CFLAGS___warn__$i.o = -Wno-error=$w" >> $TMPDIR/extra.mk
-	i=$(($i+1))
-done
-
-  message " NOTE  " <<EOF
-Running some preliminary tests to customize the build enviroment.
-EOF
-run_preliminary_tests
-
-#################################################
 # create the config.h file
 #################################################
 
@@ -1046,8 +1050,8 @@ else
 	drverror <<EOF
 There were problems copying the sources of driver $1.
 
-If you need this driver, please check that the $1@src variable 
-points to the correct path contaning the driver sources.
+If you need this driver, please check that the $1@src variable
+points to the correct path containing the driver sources.
 
 Disabling $1.
 EOF
@@ -1072,7 +1076,7 @@ Disabling $1.
 EOF
 	drv disable $1
 	edrv disable $1
-  }	
+  }
 
   for d in $(edrv print); do
 	if !(cdrv enabled $d); then
@@ -1089,7 +1093,7 @@ There were problems patching the driver $1.
 Disabling $1.
 EOF
 	drv disable $1
-  }	
+  }
 
   for d in $(drv print); do
 	  edrv enabled $d && continue
@@ -1186,7 +1190,7 @@ EOF
   for n in 2 3 4; do
   	add_test "define SELECT_QUEUE $n" <<EOF
   		#include <linux/netdevice.h>
-  
+
   		u16 dummy(struct net_device_ops *ndo)
   		{
   		        return ndo->ndo_select_queue($params);
@@ -1233,13 +1237,26 @@ EOF
 EOF
 
   # ethtool get_ringparam
-  add_test 'have GET_RINGPARAM' <<EOF
+  add_test 'define HAVE_GET_RINGPARAM 1' <<EOF
 	#include <linux/netdevice.h>
 	#include <linux/ethtool.h>
 
 	void
 	dummy(struct net_device *net, struct ethtool_ringparam *rp) {
 	        net->ethtool_ops->get_ringparam(net, rp);
+	}
+EOF
+
+  # ethtool extended get_ringparam
+  add_test 'define HAVE_GET_RINGPARAM 2' <<EOF
+	#include <linux/netdevice.h>
+	#include <linux/ethtool.h>
+
+	void
+	dummy(struct net_device *net, struct ethtool_ringparam *rp,
+		struct kernel_ethtool_ringparam *ker,
+		struct netlink_ext_ack *extack) {
+	        net->ethtool_ops->get_ringparam(net, rp, ker, extack);
 	}
 EOF
 
@@ -1741,6 +1758,15 @@ EOF
 	}
 EOF
 
+  add_test 'have FOLL_SPLIT' <<EOF
+	#include <linux/mm.h>
+
+	int
+	dummy(void) {
+		return FOLL_SPLIT;
+	}
+EOF
+
 # check for page_to_virt
   add_test 'have PAGE_TO_VIRT' <<EOF
   	#include <linux/mm.h>
@@ -1830,83 +1856,106 @@ EOF
 	}
 EOF
 
-# check for set_ringparam number of args
-  add_test 'have SET_RINGPARAM_4ARGS' <<EOF
+  # setringparam additional parameters
+  add_test 'have SETRNGPRM_4ARGS' <<EOF
+	#include <linux/netdevice.h>
 	#include <linux/ethtool.h>
 
-	extern int linux_netmap_set_ringparam(struct net_device *dev,
-		struct ethtool_ringparam *e,
-		struct kernel_ethtool_ringparam *kernel_ering,
-		struct netlink_ext_ack *extack);
-	static const struct ethtool_ops dummy = {
-		.set_ringparam = linux_netmap_set_ringparam
+	int
+	dummy(struct net_device *net, struct ethtool_ringparam *r,
+		struct kernel_ethtool_ringparam *k,
+		struct netlink_ext_ack *a) {
+		return net->ethtool_ops->set_ringparam(net, r, k, a);
+	}
+EOF
 
-	};
+    # put/get_online_cpus or cpu_read_lock/unlock?
+    add_test 'have ONLINE_CPUS' <<EOF
+	#include <linux/cpu.h>
+
+	void dummy(void) {
+		get_online_cpus();
+		put_online_cpus();
+	}
+EOF
+
+   # pollwait with 5 args (as seen in uek)
+   add_test 'have POLLWAIT_5ARGS' <<EOF
+	#include <linux/poll.h>
+
+	void dummypoll(struct file *f,
+		wait_queue_head_t *w,
+		struct poll_table_struct *p,
+		unsigned long fixed_event);
+
+	void dummy(poll_table *pt) {
+		init_poll_funcptr(pt, dummypoll);
+	}
 EOF
 
   #####################################################
   # checks related to drivers                         #
   #####################################################
-  
+
   # e1000e
   if drv enabled e1000e; then
-  
+
   add_file_exists_check e1000e/e1000.h true "drv_source_error e1000e"
-  
+
   add_test 'have E1000E_HWADDR' <<EOF
   	#include "e1000e/e1000.h"
-  
+
   	void* dummy(struct e1000_adapter *adapter,
   	        struct e1000_ring *ring)
   	{
   		return adapter->hw.hw_addr + ring->tail;
   	}
 EOF
-  
+
   add_test 'have E1000E_DOWN2' <<EOF
   	#include "e1000e/e1000.h"
-  
+
   	void dummy(struct e1000_adapter *adapter)
   	{
   		e1000e_down(adapter, false);
   	}
 EOF
-  
+
   add_test "grep -q '\<e1000_rx_desc_extended\>' $TMPDIR/e1000e/netdev.c \
   	&& have E1000E_EXT_RXDESC" </dev/null
   fi # e1000e
-  
+
   # rtl8169
   if drv enabled r8169.c; then
-  
+
   add_file_exists_check r8169.c true "drv_source_error r8169.c"
-  
+
   add_test 'define RTL_OPEN rtl8169_open' 'define RTL_OPEN rtl_open' <<EOF
   	#include "r8169.c"
-  
+
   	static int dummy(struct net_device *dev) {
   		return rtl8169_open(dev);
   	}
 EOF
-  
+
   add_test 'have RTL_WFQ' <<EOF
   	#include "r8169.c"
-  
+
   	static void dummy(struct net_device *dev) {
   		rtl8169_wait_for_quiescence(dev);
   	}
 EOF
   fi # r8169.c
-  
+
   # ixgbe
   if drv enabled ixgbe; then
-  
+
   add_file_exists_check ixgbe/ixgbe.h true "drv_source_error ixgbe"
-  
+
   # different versions of IXGBE_?X_DESC
   add_test 'define IXGBE_DESC 1' <<EOF
   	#include "ixgbe/ixgbe.h"
-  
+
   	union ixgbe_adv_tx_desc *
   	dummy(struct ixgbe_ring *ring) {
   		return IXGBE_TX_DESC_ADV(*ring, 0);
@@ -1914,7 +1963,7 @@ EOF
 EOF
   add_test 'define IXGBE_DESC 2' <<EOF
   	#include "ixgbe/ixgbe.h"
-  
+
   	union ixgbe_adv_tx_desc *
   	dummy(struct ixgbe_ring *ring) {
   		return IXGBE_TX_DESC_ADV(ring, 0);
@@ -1922,17 +1971,17 @@ EOF
 EOF
   add_test 'define IXGBE_DESC 3' <<EOF
   	#include "ixgbe/ixgbe.h"
-  
+
   	union ixgbe_adv_tx_desc *
   	dummy(struct ixgbe_ring *ring) {
   		return IXGBE_TX_DESC(ring, 0);
   	}
 EOF
-  
+
   # array of rings or array of poiners to rings?
   add_test 'define IXGBE_PTR_ARRAY' <<EOF
   	#include "ixgbe/ixgbe.h"
-  
+
   	struct ixgbe_ring *
   	dummy(struct ixgbe_adapter *adapter) {
   		return adapter->tx_ring[0];
@@ -1988,7 +2037,7 @@ EOF
   # array of rings or array of poiners to rings?
   add_test 'define IXGBEVF_PTR_ARRAY' <<EOF
   	#include "ixgbevf/ixgbevf.h"
-  
+
   	struct ixgbevf_ring *
   	dummy(struct ixgbevf_adapter *adapter) {
   		return adapter->tx_ring[0];
@@ -2011,9 +2060,9 @@ EOF
     if edrv enabled virtio_net.c; then
         VNETDIR="virtio_net.c/"
     fi
-  
+
     add_file_exists_check ${VNETDIR}virtio_net.c true "drv_source_error virtio_net.c"
-  
+
     add_test 'define VIRTIO_NET_HDR_FROM_SKB_5ARGS' <<EOF
 	#include <linux/virtio_net.h>
 
@@ -2172,45 +2221,45 @@ EOF
 
     add_test 'define VIRTIO_CB_DELAYED' <<EOF
   	#include <linux/virtio.h>
-  
+
   	bool
   	dummy(struct virtqueue *vq) {
   		return virtqueue_enable_cb_delayed(vq);
   	}
 EOF
-  
+
     add_test 'define VIRTIO_GET_VRSIZE' <<EOF
   	#include <linux/virtio.h>
-  
+
   	unsigned int
   	dummy(struct virtqueue *vq) {
   		return virtqueue_get_vring_size(vq);
   	}
 EOF
-  
+
     add_test 'define VIRTIO_FREE_PAGES' <<EOF
 	#include "${VNETDIR}virtio_net.c"
-  
+
   	void
   	dummy(struct virtnet_info *vi) {
   		free_receive_bufs(vi);
   	}
 EOF
-  
+
     add_test 'define VIRTIO_FUNCTIONS' <<EOF
   	#include <linux/virtio.h>
-  
+
   	void
   	dummy(struct virtqueue *vq) {
   		(void)virtqueue_kick(vq);
   	}
 EOF
-  
+
     for s in "" _gfp; do
   	f="virtqueue_add_buf$s"
   	add_test "define VIRTIO_ADD_BUF $f" <<EOF
   		#include <linux/virtio.h>
-  
+
   		int
   		dummy(struct virtqueue *vq, struct scatterlist sg[],
   			unsigned int out_num, unsigned int in_num,
@@ -2220,43 +2269,43 @@ EOF
   		}
 EOF
   done
-  
+
     add_test 'define VIRTIO_MULTI_QUEUE' <<EOF
 	#include "${VNETDIR}virtio_net.c"
-  
+
   	struct virtqueue *
   	dummy(struct virtnet_info *vi) {
   		return vi->rq[0].vq;
   	}
 EOF
-  
+
     add_test 'define VIRTIO_RQ_NUM' <<EOF
 	#include "${VNETDIR}virtio_net.c"
-  
+
   	int
   	dummy(struct virtnet_info *vi) {
   		return vi->rq[0].num;
   	}
 EOF
-  
+
     add_test 'define VIRTIO_SG' <<EOF
 	#include "${VNETDIR}virtio_net.c"
-  
+
   	struct scatterlist *
   	dummy(struct virtnet_info *vi) {
   		return vi->rx_sg;
   	}
 EOF
-  
+
      add_test 'define VIRTIO_NOTIFY' <<EOF
   	#include <linux/virtio.h>
-  
+
   	void
   	dummy(struct virtqueue *_vq) {
   		(void)virtqueue_notify(_vq);
   	}
 EOF
-  
+
      add_test 'have GET_LINK_KSETTINGS' <<EOF
 	#include <linux/ethtool.h>
 
@@ -2268,17 +2317,17 @@ EOF
 EOF
 
   fi # virtio-net
-  
+
   if drv enabled i40e; then
     add_test 'define I40E_PTR_ARRAY' <<EOF
   	#include "i40e/i40e.h"
-  
+
   	struct i40e_ring *
   	dummy(struct i40e_vsi *vsi) {
   		return vsi->tx_rings[0];
   	}
 EOF
-   
+
    add_test 'define I40E_PTR_STATE' <<EOF
    	#include "i40e/i40e.h"
 	#include <linux/bitops.h>
@@ -2321,17 +2370,17 @@ EOF
        }
 EOF
   fi # igb
-  
+
   # END_TESTS
-  
+
   # now we actually create the file
-  
+
   rm -f $configh
   cat > $configh <<EOF
   	#ifndef NETMAP_LINUX_CONFIG_H
   	#define NETMAP_LINUX_CONFIG_H
 EOF
-  
+
   # the TESTPOSTPROC script will add macros to $configh
   message " NOTE  " <<EOF
 Now running compile tests to adapt the code to your
@@ -2339,7 +2388,7 @@ kernel version. Please wait.
 EOF
   run_tests
 
-# check for exported split_page 
+# check for exported split_page
   cat >> config.log <<EOF
 ##############################################################################
 ## CHECKING FOR split_page
@@ -2363,15 +2412,15 @@ EOF
   if [ -n "$DMASYNC" ]; then
 	  have DMASYNC
   fi
-  
+
   define DRIVER_SUFFIX \"$drvsuffix\"
-  
+
   # file end
   cat >> $configh <<EOF
-  
+
   	#endif
 EOF
-  
+
   if [ -d "$cache" ]; then
   	cp $configh "$cache"
   fi

@@ -384,7 +384,7 @@ nm_os_csum_ipv4(struct nm_iphdr *iph)
 }
 
 /* Compute and insert a TCP/UDP checksum over IPv4: 'iph' points to the IPv4
- * header, 'data' points to the TCP/UDP header, 'datalen' is the lenght of
+ * header, 'data' points to the TCP/UDP header, 'datalen' is the length of
  * TCP/UDP header + payload.
  */
 void
@@ -397,7 +397,7 @@ nm_os_csum_tcpudp_ipv4(struct nm_iphdr *iph, void *data,
 }
 
 /* Compute and insert a TCP/UDP checksum over IPv6: 'ip6h' points to the IPv6
- * header, 'data' points to the TCP/UDP header, 'datalen' is the lenght of
+ * header, 'data' points to the TCP/UDP header, 'datalen' is the length of
  * TCP/UDP header + payload.
  */
 void
@@ -1163,26 +1163,37 @@ nm_os_generic_set_features(struct netmap_generic_adapter *gna)
 }
 #endif /* WITH_GENERIC */
 
-/* Use ethtool to find the current NIC rings lengths, so that the netmap
-   rings can have the same lengths. */
+/*
+ * Use ethtool to find the current NIC rings lengths, so that the netmap
+ * rings can have the same lengths. If no ethtool command is available,
+ * or something fails, do not update the output arguments.
+ * The caller should initialize the output arguments with sane defaults.
+ */
 int
 nm_os_generic_find_num_desc(struct ifnet *ifp, unsigned int *tx, unsigned int *rx)
 {
 	int error = EOPNOTSUPP;
 #ifdef NETMAP_LINUX_HAVE_GET_RINGPARAM
 	struct ethtool_ringparam rp;
+#if NETMAP_LINUX_HAVE_GET_RINGPARAM == 2
+	struct kernel_ethtool_ringparam ker;
+	struct netlink_ext_ack extack;
+#endif
+	unsigned int ntx, nrx;
 
 	if (ifp->ethtool_ops && ifp->ethtool_ops->get_ringparam) {
-		ifp->ethtool_ops->get_ringparam(ifp, &rp);
-		*tx = rp.tx_pending ? rp.tx_pending : rp.tx_max_pending;
-		*rx = rp.rx_pending ? rp.rx_pending : rp.rx_max_pending;
-		if (*rx < 3) {
-			nm_prerr("Invalid RX ring size %u, using default", *rx);
-			*rx = netmap_generic_ringsize;
+		ifp->ethtool_ops->get_ringparam(ifp, &rp
+#if NETMAP_LINUX_HAVE_GET_RINGPARAM == 2
+				, &ker, &extack
+#endif
+				);
+		ntx = rp.tx_pending ? rp.tx_pending : rp.tx_max_pending;
+		nrx = rp.rx_pending ? rp.rx_pending : rp.rx_max_pending;
+		if (nrx >= 3) {
+			*rx = nrx;
 		}
-		if (*tx < 3) {
-			nm_prerr("Invalid TX ring size %u, using default", *tx);
-			*tx = netmap_generic_ringsize;
+		if (ntx >= 3) {
+			*tx = ntx;
 		}
 		error = 0;
 	}
@@ -1228,13 +1239,17 @@ netmap_rings_config_get(struct netmap_adapter *na, struct nm_config_info *info)
 		error = ENXIO;
 		goto out;
 	}
-	error = nm_os_generic_find_num_desc(ifp, &info->num_tx_descs,
-						&info->num_rx_descs);
-	if (error)
-		goto out;
 	nm_os_generic_find_num_queues(ifp, &info->num_tx_rings,
 					&info->num_rx_rings);
 
+	/*
+	 * Start from what we already know and check for config
+	 * updates.
+	 */
+	info->num_tx_descs = na->num_tx_desc;
+	info->num_rx_descs = na->num_rx_desc;
+	nm_os_generic_find_num_desc(ifp, &info->num_tx_descs,
+					&info->num_rx_descs);
 out:
 	rtnl_unlock();
 
@@ -1433,17 +1448,14 @@ linux_netmap_change_mtu(struct net_device *dev, int new_mtu)
  *
  * Linux calls this while holding the rtnl_lock().
  */
-#ifdef NETMAP_LINUX_HAVE_SET_RINGPARAM_4ARGS
 int
 linux_netmap_set_ringparam(struct net_device *dev,
-	struct ethtool_ringparam *e,
-	struct kernel_ethtool_ringparam *kernel_ering,
-	struct netlink_ext_ack *extack)
-#else
-int
-linux_netmap_set_ringparam(struct net_device *dev,
-	struct ethtool_ringparam *e)
-#endif
+	struct ethtool_ringparam *e
+#ifdef NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS
+	, struct kernel_ethtool_ringparam *k
+	, struct netlink_ext_ack *a
+#endif /* NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS */
+	)
 {
 #ifdef NETMAP_LINUX_HAVE_AX25PTR
 	return -EBUSY;
@@ -1453,11 +1465,11 @@ linux_netmap_set_ringparam(struct net_device *dev,
 	if (nm_netmap_on(na))
 		return -EBUSY;
 	if (na->magic.save_eto->set_ringparam)
-#ifdef NETMAP_LINUX_HAVE_SET_RINGPARAM_4ARGS
-		return na->magic.save_eto->set_ringparam(dev, e, kernel_ering, extack);
-#else
-		return na->magic.save_eto->set_ringparam(dev, e);
-#endif
+		return na->magic.save_eto->set_ringparam(dev, e
+#ifdef NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS
+				, k, a
+#endif /* NETMAP_LINUX_HAVE_SETRNGPRM_4ARGS */
+				);
 	return -EOPNOTSUPP;
 #endif /* NETMAP_LINUX_HAVE_AX25PTR */
 }
@@ -1670,7 +1682,7 @@ netmap_pernet_init(struct net *net)
 		return error;
 
 	ns->net = net;
-	ns->num_bridges = NM_BRIDGES;
+	ns->num_bridges = vale_max_bridges;
 	ns->bridges = netmap_init_bridges2(ns->num_bridges);
 	if (ns->bridges == NULL) {
 		nm_bns_destroy(net, ns);
@@ -2466,7 +2478,6 @@ nm_os_vi_persist(const char *name, struct ifnet **ret)
 	}
 #ifdef CONFIG_NET_NS
 	dev_net_set(ifp, current->nsproxy->net_ns);
-	ifp->features |= NETIF_F_NETNS_LOCAL; /* just for safety */
 #endif
 	ifp->dev.driver = &linux_dummy_drv;
 	error = register_netdev(ifp);

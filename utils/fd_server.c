@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <net/if.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -261,7 +262,7 @@ handle_request(int accept_socket, int listen_socket)
 
 	ret = send_fd(accept_socket, fd, &res, sizeof(res));
 	if (ret == -1) {
-		msg("error while sending the reponse\n");
+		msg("error while sending the response\n");
 	}
 	return ret;
 }
