@@ -6,6 +6,18 @@ extern int ix_crcstrip;
 
 #ifdef NETMAP_ICE_LIB
 
+#ifdef ATL_CHANGE /* Support native driver */
+#ifndef ICE_RX_DESC_STATUS_DD_S
+#define ICE_RX_DESC_STATUS_DD_S ICE_RX_FLEX_DESC_STATUS0_DD_S
+#define ICE_RX_DESC_STATUS_EOF_S ICE_RX_FLEX_DESC_STATUS0_EOF_S
+#endif
+#ifndef ICE_RXD_QW1_STATUS_M
+#define ICE_RXD_QW1_STATUS_S	0
+#define ICE_RXD_QW1_STATUS_M	((BIT(ICE_RX_FLEX_DESC_STATUS0_LAST) - 1) << \
+				 ICE_RXD_QW1_STATUS_S)
+#endif
+#endif
+
 /*
  * Reconcile kernel and user view of the transmit ring.
  *
