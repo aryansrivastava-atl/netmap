@@ -474,6 +474,25 @@ i40e_netmap_txsync(struct netmap_kring *kring, int flags)
 	return 0;
 }
 
+#ifdef ATL_CHANGE
+/**
+ * i40e_netmap_update_rx_stats - Update Rx ring statistics
+ * @rx_ring: rx descriptor ring
+ * @total_rx_bytes: number of bytes received
+ * @total_rx_packets: number of packets received
+ *
+ * This function updates the Rx ring statistics.
+ **/
+void i40e_netmap_update_rx_stats(struct i40e_ring *rx_ring,
+			  unsigned int total_rx_bytes,
+			  unsigned int total_rx_packets)
+{
+	u64_stats_update_begin(&rx_ring->syncp);
+	rx_ring->stats.packets += total_rx_packets;
+	rx_ring->stats.bytes += total_rx_bytes;
+	u64_stats_update_end(&rx_ring->syncp);
+}
+#endif /* ATL_CHANGE */
 
 /*
  * Reconcile kernel and user view of the receive ring.
@@ -506,6 +525,9 @@ i40e_netmap_rxsync(struct netmap_kring *kring, int flags)
 	struct i40e_netdev_priv *np = netdev_priv(ifp);
 	struct i40e_vsi *vsi = np->vsi;
 	struct i40e_ring *rxr;
+#ifdef ATL_CHANGE
+	unsigned int total_rx_bytes = 0, total_rx_packets = 0;
+#endif /* ATL_CHANGE */
 
 	if (!netif_running(ifp))
 		return 0;
@@ -603,6 +625,12 @@ i40e_netmap_rxsync(struct netmap_kring *kring, int flags)
 			netmap_sync_map_cpu(na, (bus_dma_tag_t) na->pdev,
 					&paddr, slot->len, NR_RX);
 
+#ifdef ATL_CHANGE
+			/* Statistics */
+			total_rx_bytes += size;
+			total_rx_packets++;
+#endif /* ATL_CHANGE */
+
 			nm_i = nm_next(nm_i, lim);
 			nic_i = nm_next(nic_i, lim);
 		}
@@ -615,6 +643,13 @@ i40e_netmap_rxsync(struct netmap_kring *kring, int flags)
 		}
 		kring->nr_kflags &= ~NKR_PENDINTR;
 	}
+
+#ifdef ATL_CHANGE
+	/* Store statistics */
+	if (total_rx_packets) {
+		i40e_netmap_update_rx_stats(rxr, total_rx_bytes, total_rx_packets);
+	}
+#endif /* ATL_CHANGE */
 
 	/*
 	 * Second part: skip past packets that userspace has released.
