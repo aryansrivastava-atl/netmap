@@ -1845,6 +1845,30 @@ EOF
 	};
 EOF
 
+# check for net_device->stats using u64_stats_t instead of integer
+  add_test 'have DEV_TSTATS_U64_STATS_T' <<EOF
+    #include <linux/netdevice.h>
+
+    void * dummy(struct net_device *dev)
+    {
+     struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
+     u64_stats_add(&tstats->rx_packets, 1);
+     u64_stats_add(&tstats->rx_bytes, 1);
+     return tstats;
+    }
+EOF
+
+# check if old version of netif_rx exists that doesn't handle soft irqs
+  add_test 'have NETIF_RX_NO_SOFTIRQ' <<EOF
+    #include <linux/netdevice.h>
+
+    void * dummy(struct sk_buff *skb)
+    {
+     netif_rx_ni(skb);
+     return m;
+    }
+EOF
+
   #####################################################
   # checks related to drivers                         #
   #####################################################
@@ -2302,6 +2326,21 @@ EOF
 	}
 EOF
   fi # i40e
+  
+ if drv enabled ice; then
+    add_test 'have ICE_XRINGS' <<EOF
+	#include "ice/ice.h"
+
+	struct ice_tx_ring *
+	dummy1(struct ice_vsi *vsi) {
+		return vsi->tx_rings[0];
+	}
+	struct ice_rx_ring *
+	dummy2(struct ice_vsi *vsi) {
+		return vsi->rx_rings[0];
+	}
+EOF
+  fi # ice
 
   if drv enabled igb; then
     add_test 'have IGB_RD32' <<EOF

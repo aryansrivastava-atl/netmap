@@ -1233,8 +1233,13 @@ netmap_grab_packets(struct netmap_kring *kring, struct mbq *q, int force)
 			{
 				struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
 				u64_stats_update_begin(&tstats->syncp);
+#ifdef NETMAP_LINUX_HAVE_DEV_TSTATS_U64_STATS_T
+				u64_stats_add(&tstats->rx_packets, 1);
+				u64_stats_add(&tstats->rx_bytes, slot->len);
+#else /* NETMAP_LINUX_HAVE_DEV_TSTATS_U64_STATS_T */
 				tstats->rx_packets++;
 				tstats->rx_bytes += slot->len;
+#endif /* NETMAP_LINUX_HAVE_DEV_TSTATS_U64_STATS_T */
 				u64_stats_update_end(&tstats->syncp);
 			}
 		}

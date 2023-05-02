@@ -1,6 +1,14 @@
 #include <bsd_glue.h>
 #include <net/netmap.h>
 #include <dev/netmap/netmap_kern.h>
+#ifdef NETMAP_LINUX_HAVE_ICE_XRINGS
+#define NM_ICE_RXRING ice_rx_ring
+#define NM_ICE_TXRING ice_tx_ring
+#else
+#define NM_ICE_RXRING ice_ring
+#define NM_ICE_TXRING ice_ring
+#endif /* NETMAP_LINUX_HAVE_ICE_XRINGS */
+
 
 extern int ix_crcstrip;
 
@@ -53,7 +61,7 @@ ice_netmap_txsync(struct netmap_kring *kring, int flags)
 	/* device-specific */
 	struct ice_netdev_priv *np = netdev_priv(ifp);
 	struct ice_vsi *vsi = np->vsi;
-	struct ice_ring *txr;
+	struct NM_ICE_TXRING *txr;
 
 	if (!netif_carrier_ok(ifp))
 		return 0;
@@ -225,7 +233,7 @@ ice_netmap_rxsync(struct netmap_kring *kring, int flags)
 	/* device-specific */
 	struct ice_netdev_priv *np = netdev_priv(ifp);
 	struct ice_vsi *vsi = np->vsi;
-	struct ice_ring *rxr;
+	struct NM_ICE_RXRING *rxr;
 
 	if (!netif_running(ifp))
 		return 0;
@@ -505,7 +513,7 @@ SYSCTL_INT(_dev_netmap, OID_AUTO, ix_crcstrip,
 		CTLFLAG_RW, &ix_crcstrip, 1, "NIC strips CRC on rx frames");
 
 static void
-ice_netmap_configure_tx_ring(struct ice_ring *ring)
+ice_netmap_configure_tx_ring(struct NM_ICE_TXRING *ring)
 {
 	struct netmap_adapter *na;
 
@@ -519,7 +527,7 @@ ice_netmap_configure_tx_ring(struct ice_ring *ring)
 }
 
 static void
-ice_netmap_preconfigure_rx_ring(struct ice_ring *ring,
+ice_netmap_preconfigure_rx_ring(struct NM_ICE_RXRING *ring,
 		struct ice_rlan_ctx *rx_ctx)
 {
 	struct netmap_adapter *na;
@@ -540,7 +548,7 @@ ice_netmap_preconfigure_rx_ring(struct ice_ring *ring,
 }
 
 static int
-ice_netmap_configure_rx_ring(struct ice_ring *ring)
+ice_netmap_configure_rx_ring(struct NM_ICE_RXRING *ring)
 {
 	struct netmap_adapter *na;
 	struct netmap_slot *slot;
