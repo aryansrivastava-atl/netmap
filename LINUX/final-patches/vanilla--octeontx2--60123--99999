@@ -1,0 +1,57 @@
+diff --git a/drivers/net/ethernet/marvell/octeontx2/nic/otx2_pf.c b/drivers/net/ethernet/marvell/octeontx2/nic/otx2_pf.c
+index 56c4bb875ace..8fd199cb5c70 100644
+--- a/octeontx2/nic/otx2_pf.c
++++ b/octeontx2/nic/otx2_pf.c
+@@ -29,6 +29,10 @@
+ #include <linux/mii.h>
+ #include <linux/arm-smccc.h>
+
++#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
++#include <otx2_netmap.h>
++#endif
++
+ #define DRV_NAME	"rvu_nicpf"
+ #define DRV_STRING	"Marvell RVU NIC Physical Function Driver"
+ #define PLAT_OCTEONTX_PHY_MDIO		0xc2000e04
+@@ -1383,6 +1387,20 @@ static irqreturn_t otx2_cq_intr_handler(int irq, void *cq_irq)
+	 */
+	otx2_write64(pf, NIX_LF_CINTX_ENA_W1C(qidx), BIT_ULL(0));
+
++#ifdef CONFIG_NETMAP
++	int workdone, ret = NM_IRQ_PASS;
++
++	/* Check for RX intr */
++	if (cq_poll->cq_ids[CQ_RX] != CINT_INVALID_CQ)
++		ret = netmap_rx_irq(pf->netdev, qidx, &workdone);
++
++	if (ret == NM_IRQ_PASS)
++		goto napi;
++	else
++		return IRQ_HANDLED;
++
++napi:
++#endif
+	/* Schedule NAPI */
+	pf->napi_events++;
+	napi_schedule_irqoff(&cq_poll->napi);
+@@ -3154,6 +3172,10 @@ static int otx2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+		goto err_pf_sriov_init;
+ #endif
+
++#ifdef CONFIG_NETMAP
++	otx2_netmap_attach (pf);
++#endif /* DEV_NETMAP */
++
+	return 0;
+
+ err_pf_sriov_init:
+@@ -3318,6 +3340,9 @@ static void otx2_remove(struct pci_dev *pdev)
+	/* Disable link notifications */
+	otx2_cgx_config_linkevents(pf, false);
+
++#ifdef CONFIG_NETMAP
++	otx2_netmap_detach (pf);
++#endif /* DEV_NETMAP */
+	otx2_unregister_dl(pf);
+	if (netdev->phydev)
+		phy_disconnect(netdev->phydev);

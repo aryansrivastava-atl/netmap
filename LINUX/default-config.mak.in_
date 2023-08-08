@@ -143,3 +143,6 @@ octeon@conf := CONFIG_OCTEON_ETHERNET
 ipt_netmap@conf := CONFIG_IP_NF_IPTABLES
 ipt_netmap@src := test -e @SRCDIR@/ipt_netmap
 ipt_netmap@patch       := @SRCDIR@/ipt_netmap/ipt_netmap.patch
+
+octeontx2@src := cp -Rp @KSRC@/source/drivers/net/ethernet/marvell/octeontx2/ octeontx2
+octeontx2@conf := CONFIG_OCTEONTX2_PF

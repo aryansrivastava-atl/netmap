@@ -113,7 +113,8 @@ subsys enable ptnetmap
 
 # available drivers
 driver_avail="stmmac r8169.c virtio_net.c forcedeth.c veth.c \
-	e1000 e1000e igb igc ixgbe ixgbevf ice i40e vmxnet3 mlx5 octeon ipt_netmap"
+	e1000 e1000e igb igc ixgbe ixgbevf ice i40e vmxnet3 mlx5 octeon ipt_netmap \
+	octeontx2"
 # enabled drivers (bitfield)
 driver=
 drv()
