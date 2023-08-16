@@ -219,7 +219,9 @@ static inline int ipt_prerouting_finish(struct net *net, struct sock *sk,
 
 	if (skb->protocol == htons(ETH_P_IP)) {
 		const struct iphdr *iph = ip_hdr(skb);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
 		skb = l3mdev_ip_rcv(skb);
+#endif
 		if (!skb)
 			return NET_RX_SUCCESS;
 		if (!skb_valid_dst(skb) &&
@@ -230,6 +232,9 @@ static inline int ipt_prerouting_finish(struct net *net, struct sock *sk,
 			return NET_RX_DROP;
 		}
 	} else {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,9,0)
+		ip6_route_input (skb);
+#else
 		const struct ipv6hdr *iph = ipv6_hdr(skb);
 		skb = l3mdev_ip6_rcv(skb);
 		if (!skb)
@@ -250,8 +255,9 @@ static inline int ipt_prerouting_finish(struct net *net, struct sock *sk,
 			skb_dst_set(skb, ip6_route_input_lookup(net, dev, &fl6, flags));
 #else
 			skb_dst_set(skb, ip6_route_input_lookup(net, dev, &fl6, skb, flags));
-#endif
+#endif /* LINUX_VERSION_CODE <= KERNEL_VERSION(5,0,0) */
 		}
+#endif /* LINUX_VERSION_CODE <= KERNEL_VERSION(4,9,0) */
 	}
 	return dst_input(skb);
 }
@@ -329,12 +335,16 @@ static int ipt_txsync(struct netmap_kring *kring, int flags)
 		skb_set_network_header(skb, 0);
 		if (proto == htons(ETH_P_IP)) {
 			skb_set_transport_header(skb, sizeof(struct iphdr));
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
 			IPCB(skb)->iif = skb->skb_iif;
+#endif
 		}
 		else if (proto == htons(ETH_P_IPV6)) {
 			skb_set_transport_header(skb, sizeof(struct ipv6hdr));
 			IP6CB(skb)->nhoff = offsetof(struct ipv6hdr, nexthdr);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
 			IP6CB(skb)->iif = skb->skb_iif;
+#endif
 		}
 		skb->protocol = proto;
 
@@ -711,9 +721,18 @@ static unsigned int nmring_tg4(struct sk_buff *skb,
 		m_freem(skb);
 		if (!IS_ERR(segments) && segments)
 		{
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(5,3,0)
+			for ((skb) = (segments), (next) = (skb) ? (skb)->next : NULL; (skb);
+				 (skb) = (next), (next) = (skb) ? (skb)->next : NULL) {
+#else
 			skb_list_walk_safe(segments, skb, next) {
+#endif
 				/* This no longer needs GSO */
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,13,0)
+				skb->next = NULL;
+#else
 				skb_mark_not_on_list(skb);
+#endif
 				copy_pkt_to_queue(priv->net, skb->sk, skb);
 			}
 		}
@@ -920,7 +939,11 @@ static void __net_exit ipt_netmap_net_exit(struct net *net)
 }
 
 static struct pernet_operations ipt_netmap_net_ops = {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(5,3,0)
+	.exit	= ipt_netmap_net_exit,
+#else
 	.pre_exit	= ipt_netmap_net_exit,
+#endif
 	.id	= &ipt_netmap_net_id,
 	.size	= 0,
 };
