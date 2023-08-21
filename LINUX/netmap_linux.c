@@ -2614,6 +2614,26 @@ EXPORT_SYMBOL(nm_clear_native_flags);
 EXPORT_SYMBOL(linux_netmap_set_ringparam);
 #endif /* NETMAP_LINUX_HAVE_AX25PTR */
 
+#ifdef ATL_CHANGE /* used by ipt_netmap */
+EXPORT_SYMBOL(nm_os_malloc);
+EXPORT_SYMBOL(nm_os_free);
+EXPORT_SYMBOL(netmap_global_lock);
+EXPORT_SYMBOL(netmap_priv_new);
+EXPORT_SYMBOL(netmap_ioctl);
+EXPORT_SYMBOL(netmap_ioctl_legacy);
+EXPORT_SYMBOL(netmap_priv_delete);
+EXPORT_SYMBOL(netmap_generic_ringsize);
+EXPORT_SYMBOL(mbq_init);
+EXPORT_SYMBOL(mbq_safe_init);
+EXPORT_SYMBOL(mbq_safe_enqueue);
+EXPORT_SYMBOL(mbq_safe_purge);
+EXPORT_SYMBOL(mbq_enqueue);
+EXPORT_SYMBOL(mbq_dequeue);
+EXPORT_SYMBOL(mbq_purge);
+EXPORT_SYMBOL(mbq_fini);
+EXPORT_SYMBOL(mbq_safe_fini);
+#endif
+
 MODULE_AUTHOR("http://info.iet.unipi.it/~luigi/netmap/");
 MODULE_DESCRIPTION("The netmap packet I/O framework");
 MODULE_LICENSE("Dual BSD/GPL"); /* the code here is all BSD. */
