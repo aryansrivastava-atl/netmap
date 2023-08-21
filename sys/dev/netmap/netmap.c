@@ -1241,6 +1241,9 @@ netmap_grab_packets(struct netmap_kring *kring, struct mbq *q, int force)
 	u_int const head = kring->rhead;
 	u_int n;
 	struct netmap_adapter *na = kring->na;
+#ifdef ATL_CHANGE
+	struct net_device *dev;
+#endif
 
 	for (n = kring->nr_hwcur; n != head; n = nm_next(n, lim)) {
 		struct mbuf *m;
@@ -1256,7 +1259,37 @@ netmap_grab_packets(struct netmap_kring *kring, struct mbq *q, int force)
 		}
 		slot->flags &= ~NS_FORWARD; // XXX needed ?
 		/* XXX TODO: adapt to the case of a multisegment packet */
+#ifdef ATL_CHANGE
+		rcu_read_lock();
+		dev = dev_get_by_index_rcu(dev_net(na->ifp), slot->iif);
+		if (dev)
+		{
+			m = m_devget(NMB(na, slot), slot->len, 0,
+			             dev, NULL, slot->mark, slot->hash, slot->iif,
+			             slot->protocol);
+			if (na->ifp != dev)
+			{
+				struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
+				u64_stats_update_begin(&tstats->syncp);
+#ifdef NETMAP_LINUX_HAVE_DEV_TSTATS_U64_STATS_T
+				u64_stats_add(&tstats->rx_packets, 1);
+				u64_stats_add(&tstats->rx_bytes, slot->len);
+#else /* NETMAP_LINUX_HAVE_DEV_TSTATS_U64_STATS_T */
+				tstats->rx_packets++;
+				tstats->rx_bytes += slot->len;
+#endif /* NETMAP_LINUX_HAVE_DEV_TSTATS_U64_STATS_T */
+				u64_stats_update_end(&tstats->syncp);
+			}
+		}
+		else
+		{
+			kring->ring->drops++;
+			m = NULL;
+		}
+		rcu_read_unlock();
+#else
 		m = m_devget(NMB_O(kring, slot), len, 0, na->ifp, NULL);
+#endif
 
 		if (m == NULL)
 			break;
@@ -1411,12 +1444,20 @@ netmap_rxsync_from_host(struct netmap_kring *kring, int flags)
 		while (nm_i != stop_i && (m = mbq_dequeue(q)) != NULL) {
 			int len = MBUF_LEN(m);
 			struct netmap_slot *slot = &ring->slot[nm_i];
+#ifdef ATL_CHANGE
+			/* reset slot ll_ofs for buffer address calculation with default headroom */
+			slot->ll_ofs = 0;
+#endif
 
 			m_copydata(m, 0, len, NMB_O(kring, slot));
 			nm_prdis("nm %d len %d", nm_i, len);
 			if (netmap_debug & NM_DEBUG_HOST)
 				nm_prinf("%s", nm_dump_buf(NMB_O(kring, slot), len, 128, NULL));
 
+#ifdef ATL_CHANGE
+			slot->mark = 0;
+			slot->hash = 0;
+#endif
 			slot->len = len;
 			slot->flags = 0;
 			nm_i = nm_next(nm_i, lim);

@@ -838,9 +838,15 @@ generic_rx_handler(if_t ifp, struct mbuf *m)
 		nm_prlim(2, "Warning: driver pushed up big packet "
 				"(size=%d)", (int)MBUF_LEN(m));
 		if_inc_counter(ifp, IFCOUNTER_IQDROPS, 1);
+#ifdef ATL_CHANGE
+		kring->ring->drops++;
+#endif
 		m_freem(m);
 	} else if (unlikely(mbq_len(&kring->rx_queue) > na->num_rx_desc)) {
 		if_inc_counter(ifp, IFCOUNTER_IQDROPS, 1);
+#ifdef ATL_CHANGE
+		kring->ring->drops++;
+#endif
 		m_freem(m);
 	} else {
 		mbq_safe_enqueue(&kring->rx_queue, m);
@@ -986,6 +992,12 @@ generic_netmap_rxsync(struct netmap_kring *kring, int flags)
 		do {
 			struct netmap_slot *slot = ring->slot + nm_i;
 			uint64_t nm_offset = nm_get_offset(kring, slot);
+#ifdef ATL_CHANGE
+			ring->slot[nm_i].mark = 0;
+			ring->slot[nm_i].hash = 0;
+			/* reset slot ll_ofs for buffer address calculation with default headroom */
+			ring->slot[nm_i].ll_ofs = 0;
+#endif
 			char *nmaddr = NMB(na, slot);
 
 			if (nmaddr == NETMAP_BUF_BASE(na)) { /* Bad buffer */
