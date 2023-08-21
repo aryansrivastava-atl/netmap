@@ -36,6 +36,9 @@
 #include <linux/rtnetlink.h>
 #include <linux/nsproxy.h>
 #include <linux/ip.h>
+#ifdef ATL_CHANGE
+#include <uapi/linux/if_arp.h>
+#endif
 #include <net/pkt_sched.h>
 #include <net/sch_generic.h>
 #include <net/sock.h>
@@ -429,6 +432,12 @@ nm_os_send_up(struct ifnet *ifp, struct mbuf *m, struct mbuf *prev)
 int
 nm_os_mbuf_has_csum_offld(struct mbuf *m)
 {
+#ifdef ATL_CHANGE
+	if (m->ip_summed == CHECKSUM_PARTIAL &&
+		skb_checksum_help(m) != 0) {
+		nm_prinf("Failed to calculate checksum (turn off tx checksum offload)");
+	}
+#endif
 	return m->ip_summed == CHECKSUM_PARTIAL;
 }
 
@@ -534,6 +543,18 @@ enum {
 	NM_RX_HANDLER_PASS,
 };
 
+#ifdef ATL_CHANGE
+static void
+update_eth_hdr(struct ifnet *ifp, struct mbuf *m)
+{
+	struct ethhdr *eth_hdr = NULL;
+	eth_hdr = (struct ethhdr *) m->data;
+	eth_hdr->h_proto = m->protocol;
+	ether_addr_copy(eth_hdr->h_dest, ifp->dev_addr);
+	eth_zero_addr(eth_hdr->h_source);
+}
+#endif
+
 static inline int
 linux_generic_rx_handler_common(struct mbuf *m)
 {
@@ -559,6 +580,18 @@ linux_generic_rx_handler_common(struct mbuf *m)
 		m = __vlan_hwaccel_push_inside(m);
 	}
 #endif /* NETMAP_LINUX_HAVE_VLAN_UNTAG */
+
+#ifdef ATL_CHANGE
+	if (m->dev->type == ARPHRD_PPP ||
+		m->dev->type == ARPHRD_IPGRE ||
+		m->dev->type == ARPHRD_IP6GRE ||
+		m->dev->type == ARPHRD_TUNNEL ||
+		m->dev->type == ARPHRD_TUNNEL6 ||
+		m->dev->type == ARPHRD_RAWIP)
+	{
+		update_eth_hdr(m->dev, m);
+	}
+#endif
 
 	/* Possibly steal the mbuf and notify the pollers for a new RX
 	 * packet. */
