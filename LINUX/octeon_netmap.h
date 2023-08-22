@@ -575,6 +575,21 @@ ring_reset:
 	return netmap_ring_reinit(kring);
 }
 
+static int
+octeon_netmap_config(struct netmap_adapter *na, struct nm_config_info *info)
+{
+	int rx_rings = bitmap_weight(((const unsigned long *)
+				      &pow_receive_groups), BITS_PER_LONG);
+
+	info->num_tx_rings = 1;
+	info->num_rx_rings = rx_rings;
+	info->num_tx_descs = 128;
+	info->num_rx_descs = 128;
+	info->rx_buf_maxsize = NETMAP_BUF_SIZE(na);
+
+	return 0;
+}
+
 static void octeon_netmap_attach(struct octeon_ethernet *priv)
 {
 	struct netmap_adapter na;
@@ -596,6 +611,7 @@ static void octeon_netmap_attach(struct octeon_ethernet *priv)
 	na.num_tx_desc = 128;
 	na.num_rx_desc = 128;
 	na.nm_register = octeon_netmap_reg;
+	na.nm_config = octeon_netmap_config;
 	na.nm_txsync = octeon_netmap_txsync;
 	na.nm_rxsync = octeon_netmap_rxsync;
 	na.num_tx_rings = 1;
