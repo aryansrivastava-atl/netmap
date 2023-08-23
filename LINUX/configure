@@ -2020,6 +2020,19 @@ EOF
 	}
 EOF
 
+  # check for net_device->stats using u64_stats_t instead of integer
+  add_test 'have DEV_TSTATS_U64_STATS_T' <<EOF
+	#include <linux/netdevice.h>
+
+	void * dummy(struct net_device *dev)
+	{
+		struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
+		u64_stats_add(&tstats->rx_packets, 1);
+		u64_stats_add(&tstats->rx_bytes, 1);
+		return tstats;
+	}
+EOF
+
   #####################################################
   # checks related to drivers                         #
   #####################################################
