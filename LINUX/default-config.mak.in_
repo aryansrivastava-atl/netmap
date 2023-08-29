@@ -158,3 +158,6 @@ ipt_netmap@patch       := @SRCDIR@/ipt_netmap/ipt_netmap.patch
 
 octeontx2@src := cp -Rp @KSRC@/source/drivers/net/ethernet/marvell/octeontx2/ octeontx2
 octeontx2@conf := CONFIG_OCTEONTX2_PF
+
+mvpp2@src := cp -Rp @KSRC@/source/drivers/net/ethernet/marvell/mvpp2 mvpp2
+mvpp2@conf := CONFIG_MVPP2
