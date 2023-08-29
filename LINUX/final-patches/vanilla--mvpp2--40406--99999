@@ -1,0 +1,64 @@
+diff -u a/drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c b/drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c
+--- a/mvpp2/mvpp2_main.c	2023-05-24 16:36:55.000000000 +0000
++++ b/mvpp2/mvpp2_main.c	2023-08-28 01:50:47.764324982 +0000
+@@ -43,6 +43,10 @@
+ #include "mvpp2_prs.h"
+ #include "mvpp2_cls.h"
+ 
++#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
++#include <mvpp2_netmap.h>
++#endif
++
+ enum mvpp2_bm_pool_log_num {
+ 	MVPP2_BM_SHORT,
+ 	MVPP2_BM_LONG,
+@@ -3337,6 +3341,11 @@
+ {
+ 	struct mvpp2_queue_vector *qv = dev_id;
+ 
++#ifdef CONFIG_NETMAP
++	if (mvpp2_netmap_rx_irq(qv))
++		return IRQ_HANDLED;
++#endif /* DEV_NETMAP */
++
+ 	mvpp2_qvec_interrupt_disable(qv);
+ 
+ 	napi_schedule(&qv->napi);
+@@ -4350,6 +4359,12 @@
+ 	}
+ 	frags = skb_shinfo(skb)->nr_frags + 1;
+ 
++#ifdef CONFIG_NETMAP
++	/* Process all TX queues on this port for this thread/core */
++	if (port->has_tx_irqs) {
++		mvpp2_tx_done(port, ((1 << port->ntxqs) - 1), thread);
++	}
++#endif
+ 	/* Check number of available descriptors */
+ 	if (mvpp2_aggr_desc_num_check(port, aggr_txq, frags) ||
+ 	    mvpp2_txq_reserved_desc_num_proc(port, txq, txq_pcpu, frags)) {
+@@ -7005,6 +7018,9 @@
+ {
+ 	int i;
+ 
++#ifdef CONFIG_NETMAP
++	mvpp2_netmap_detach(port);
++#endif /* CONFIG_NETMAP */
+ 	unregister_netdev(port->dev);
+ 	if (port->phylink)
+ 		phylink_destroy(port->phylink);
+@@ -7610,6 +7626,14 @@
+ 	mvpp2_dbgfs_init(priv, pdev->name);
+ 
+ 	platform_set_drvdata(pdev, priv);
++#ifdef CONFIG_NETMAP
++	i = 0;
++	fwnode_for_each_available_child_node(fwnode, port_fwnode) {
++		if (priv->port_list[i])
++			mvpp2_netmap_attach(priv->port_list[i]);
++		i++;
++	}
++#endif /* CONFIG_NETMAP */
+ 	return 0;
+ 
+ err_port_probe:
