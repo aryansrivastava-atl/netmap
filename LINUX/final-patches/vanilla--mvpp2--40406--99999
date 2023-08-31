@@ -30,7 +30,7 @@ diff -u a/drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c b/drivers/net/ethernet
  
 +#ifdef CONFIG_NETMAP
 +	/* Process all TX queues on this port for this thread/core */
-+	if (port->has_tx_irqs) {
++	if (port->has_tx_irqs && nm_netmap_on(NA(dev))) {
 +		mvpp2_tx_done(port, ((1 << port->ntxqs) - 1), thread);
 +	}
 +#endif
