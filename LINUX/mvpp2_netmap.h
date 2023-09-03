@@ -282,21 +282,26 @@ static int mvpp2_netmap_reg(struct netmap_adapter *na, int onoff)
 	struct mvpp2_port *port = netdev_priv(na->ifp);
 	int r;
 
-	nm_prdis("NETMAP[%s] %s\n", na->ifp->name, onoff ? "ON" : "OFF");
+	nm_prdis("NETMAP[%s] %s (active=%d)", na->ifp->name, onoff ? "ON" : "OFF", na->active_fds);
 
 	/* Enable or disable */
 	if (onoff) {
-		/* We process TX completions before sending new packets */
-		for (r = 0; r < port->priv->nthreads; r++) {
-			mvpp2_netmap_mask_tx_interrupts(port, r);
+		if (na->active_fds == 0) {
+			/* We process TX completions before sending new packets */
+			for (r = 0; r < port->priv->nthreads; r++) {
+				mvpp2_netmap_mask_tx_interrupts(port, r);
+			}
 		}
 		nm_set_native_flags(na);
 	} else {
 		nm_clear_native_flags(na);
-		for (r = 0; r < port->priv->nthreads; r++) {
-			mvpp2_netmap_unmask_tx_interrupts(port, r);
+		if (na->active_fds == 0) {
+			for (r = 0; r < port->priv->nthreads; r++) {
+				mvpp2_netmap_unmask_tx_interrupts(port, r);
+			}
 		}
 	}
+
 	for (r = 0; r < na->num_rx_rings; r++) {
 		mna->irqs_enabled[r] = true;
 		(void)netmap_reset(na, NR_RX, r, 0);
