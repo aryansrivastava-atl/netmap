@@ -993,12 +993,15 @@ generic_netmap_rxsync(struct netmap_kring *kring, int flags)
 			struct netmap_slot *slot = ring->slot + nm_i;
 			uint64_t nm_offset = nm_get_offset(kring, slot);
 #ifdef ATL_CHANGE
+			char *nmaddr = NULL;
 			ring->slot[nm_i].mark = 0;
 			ring->slot[nm_i].hash = 0;
 			/* reset slot ll_ofs for buffer address calculation with default headroom */
 			ring->slot[nm_i].ll_ofs = 0;
-#endif
+			nmaddr = NMB(na, slot);
+#else
 			char *nmaddr = NMB(na, slot);
+#endif
 
 			if (nmaddr == NETMAP_BUF_BASE(na)) { /* Bad buffer */
 				m_freem(m);
