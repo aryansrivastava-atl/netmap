@@ -574,12 +574,12 @@ linux_generic_rx_handler_common(struct mbuf *m)
 	   can see it. */
 	skb_push(m, ETH_HLEN);
 
-#ifdef NETMAP_LINUX_HAVE_VLAN_UNTAG
+#ifdef NETMAP_LINUX_HAVE_SKB_VLAN_UNTAG
 	/* First VLAN tag has been already popped to skb metadata. */
 	if (skb_vlan_tag_present(m)) {
 		m = __vlan_hwaccel_push_inside(m);
 	}
-#endif /* NETMAP_LINUX_HAVE_VLAN_UNTAG */
+#endif /* NETMAP_LINUX_HAVE_SKB_VLAN_UNTAG */
 
 #ifdef ATL_CHANGE
 	if (m->dev->type == ARPHRD_PPP ||
@@ -600,12 +600,12 @@ linux_generic_rx_handler_common(struct mbuf *m)
 		return NM_RX_HANDLER_STOLEN;
 	}
 
-#ifdef NETMAP_LINUX_HAVE_VLAN_UNTAG
+#ifdef NETMAP_LINUX_HAVE_SKB_VLAN_UNTAG
 	/* Untag once again if not stolen */
 	if (eth_type_vlan(m->protocol)) {
 		m = skb_vlan_untag(m);
 	}
-#endif /* NETMAP_LINUX_HAVE_VLAN_UNTAG */
+#endif /* NETMAP_LINUX_HAVE_SKB_VLAN_UNTAG */
 
 	skb_pull(m, ETH_HLEN);
 
