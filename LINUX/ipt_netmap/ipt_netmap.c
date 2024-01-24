@@ -24,6 +24,7 @@
 #include <net/xfrm.h>
 #include <linux/list.h>
 #include <net/icmp.h>
+#include <net/gso.h>
 #include "ipt_netmap.h"
 
 MODULE_LICENSE("GPL");
