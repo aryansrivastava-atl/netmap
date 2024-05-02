@@ -106,8 +106,10 @@ static int mvpp2_netmap_rx_irq(struct mvpp2_queue_vector *qv)
 	cause_rx_exc = cause_rx_tx & MVPP2_CAUSE_RX_EXCEPTION_SUM_MASK;
 	if (cause_rx_exc) {
 		nm_prdis("NETMAP[%s:%d] CAUSE_RX_EXCEPTION(0x%08x)\n", port->dev->name, thread, cause_rx_exc);
-		mvpp2_write(port->priv, MVPP2_ISR_MISC_CAUSE_REG, 0);
-		mvpp2_thread_write(port->priv, thread, MVPP2_ISR_RX_TX_CAUSE_REG(port->id), cause_rx_tx & ~MVPP2_CAUSE_RX_EXCEPTION_SUM_MASK);
+		mvpp2_thread_write(port->priv, thread, MVPP2_ISR_RX_TX_CAUSE_REG(port->id),cause_rx_tx & ~MVPP2_CAUSE_RX_EXCEPTION_SUM_MASK);
+
+		/* Allow napi process to finish */
+		return NM_IRQ_PASS;
 	}
 
 	/* RX */
