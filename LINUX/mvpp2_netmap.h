@@ -69,6 +69,36 @@ static void mvpp2_netmap_unmask_tx_interrupts(struct mvpp2_port *port, unsigned 
 	}
 }
 
+/* Enable queue interrupts */
+static void mvpp2_netmap_qvec_interrupt_enable (struct netmap_adapter *na, int vec)
+{
+	struct mvpp2_nm_adapter *mna = (struct mvpp2_nm_adapter *)na;
+	struct ifnet *ifp = na->ifp;
+	struct mvpp2_port *port = netdev_priv(ifp);
+	struct mvpp2_queue_vector *qv = port->qvecs + vec;
+
+	if (!mna->irqs_enabled[vec]) {
+		nm_prdis("NETMAP[%s:%d] Enabled IRQ\n", ifp->name, vec);
+		mna->irqs_enabled[vec] = true;
+		mvpp2_qvec_interrupt_enable(qv);
+	}
+}
+
+/* Disable queue interrupts */
+static void mvpp2_netmap_qvec_interrupt_disable (struct netmap_adapter *na, int vec)
+{
+	struct mvpp2_nm_adapter *mna = (struct mvpp2_nm_adapter *)na;
+	struct ifnet *ifp = na->ifp;
+	struct mvpp2_port *port = netdev_priv(ifp);
+	struct mvpp2_queue_vector *qv = port->qvecs + vec;
+
+	if (mna->irqs_enabled[vec]) {
+		nm_prdis("NETMAP[%s] Disable IRQ\n", ifp->name);
+		mvpp2_qvec_interrupt_disable(qv);
+		mna->irqs_enabled[vec] = false;
+	}
+}
+
 /* Handle driver intterupts
 	MVPP2_ISR_ENABLE_REG 0xF2005420 + (4 * port=0-3) 0xF4005420 + (4 * port=0-3) 0xF6005420 + (4 * port=0-3)
 		0:15 Enable port interrupt (write a 1 to enable, read shows status)
@@ -116,10 +146,8 @@ static int mvpp2_netmap_rx_irq(struct mvpp2_queue_vector *qv)
 	cause_rx = cause_rx_tx & MVPP2_CAUSE_RXQ_OCCUP_DESC_ALL_MASK(port->priv->hw_version);
 	if (cause_rx && netmap_rx_irq(port->dev, thread, &dummy) == NM_IRQ_COMPLETED) {
 		nm_prdis("NETMAP[%s:%d] CAUSE_RXQ_OCCUP_DESC(0x%08x)\n", port->dev->name, thread, cause_rx);
-		nm_prdis("NETMAP[%s] Disable IRQ\n", port->dev->name);
-		mvpp2_qvec_interrupt_disable(qv);
+		mvpp2_netmap_qvec_interrupt_disable (na, thread);
 		// mvpp2_netmap_mask_rx_interrupts(qv);
-		mna->irqs_enabled[thread] = false;
 	}
 
 	/* TX */
@@ -145,10 +173,8 @@ static int mvpp2_netmap_rxsync(struct netmap_kring *kring, int flags)
 {
 	int force_update = (flags & NAF_FORCE_READ) || kring->nr_kflags & NKR_PENDINTR;
 	struct netmap_adapter *na = (struct netmap_adapter *)kring->na;
-	struct mvpp2_nm_adapter *mna = (struct mvpp2_nm_adapter *)na;
 	struct ifnet *ifp = na->ifp;
 	struct mvpp2_port *port = netdev_priv(ifp);
-	struct mvpp2_queue_vector *qv = port->qvecs + kring->ring_id;
 	struct mvpp2_rx_queue *rxq = port->rxqs[kring->ring_id];
 	struct netmap_ring *ring = kring->ring;
 	u_int const lim = kring->nkr_num_slots - 1;
@@ -244,11 +270,7 @@ static int mvpp2_netmap_rxsync(struct netmap_kring *kring, int flags)
 
 		if (nm_i != hwtail_lim) {
 			kring->nr_kflags &= ~NKR_PENDINTR;
-			if (!mna->irqs_enabled[kring->ring_id]) {
-				nm_prdis("NETMAP[%s:%d] Enabled IRQ (rx'ed %d pkts)\n", ifp->name, rxq->id, rx_complete);
-				mna->irqs_enabled[kring->ring_id] = true;
-				mvpp2_qvec_interrupt_enable(qv);
-			}
+			mvpp2_netmap_qvec_interrupt_enable (na, kring->ring_id);
 		}
 	}
 
@@ -292,6 +314,7 @@ static int mvpp2_netmap_reg(struct netmap_adapter *na, int onoff)
 			/* We process TX completions before sending new packets */
 			for (r = 0; r < port->priv->nthreads; r++) {
 				mvpp2_netmap_mask_tx_interrupts(port, r);
+				mna->irqs_enabled[r] = true;
 			}
 		}
 		nm_set_native_flags(na);
@@ -300,17 +323,15 @@ static int mvpp2_netmap_reg(struct netmap_adapter *na, int onoff)
 		if (na->active_fds == 0) {
 			for (r = 0; r < port->priv->nthreads; r++) {
 				mvpp2_netmap_unmask_tx_interrupts(port, r);
+				mvpp2_netmap_qvec_interrupt_enable (na, r);
 			}
 		}
 	}
 
-	for (r = 0; r < na->num_rx_rings; r++) {
-		mna->irqs_enabled[r] = true;
+	for (r = 0; r < na->num_rx_rings; r++)
 		(void)netmap_reset(na, NR_RX, r, 0);
-	}
-	for (r = 0; r < na->num_tx_rings; r++) {
+	for (r = 0; r < na->num_tx_rings; r++)
 		(void)netmap_reset(na, NR_TX, r, 0);
-	}
 
 	return 0;
 }
