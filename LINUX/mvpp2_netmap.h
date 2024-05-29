@@ -113,7 +113,6 @@ static void mvpp2_netmap_qvec_interrupt_disable (struct netmap_adapter *na, int 
 static int mvpp2_netmap_rx_irq(struct mvpp2_queue_vector *qv)
 {
 	struct netmap_adapter *na = NA(qv->port->dev);
-	struct mvpp2_nm_adapter *mna = (struct mvpp2_nm_adapter *)na;
 	struct mvpp2_port *port = qv->port;
 	unsigned int thread = mvpp2_cpu_to_thread(port->priv, smp_processor_id());
 	uint32_t cause_rx_tx, cause_rx_exc, cause_rx, cause_tx, cause_misc;
@@ -155,6 +154,8 @@ static int mvpp2_netmap_rx_irq(struct mvpp2_queue_vector *qv)
 	if (cause_tx) {
 		nm_prdis("NETMAP[%s:%d] CAUSE_TXQ_OCCUP_DESC(0x%08x)\n", port->dev->name, thread, cause_tx);
 	}
+
+	wmb(); /* Force memory writes to complete */
 
 	return IRQ_HANDLED;
 }
@@ -268,7 +269,8 @@ static int mvpp2_netmap_rxsync(struct netmap_kring *kring, int flags)
 			}
 		}
 
-		if (nm_i != hwtail_lim) {
+		/* Netmap ring is fully empty and no packets available to process */
+		if (kring->nr_hwtail == kring->nr_hwcur && !rx_received) {
 			kring->nr_kflags &= ~NKR_PENDINTR;
 			mvpp2_netmap_qvec_interrupt_enable (na, kring->ring_id);
 		}
