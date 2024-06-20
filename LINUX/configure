@@ -1318,7 +1318,7 @@ EOF
 
   # check for netif_rx_ni
   add_test 'have NETIF_RX_NI' <<EOF
-	#include <linux/skbuff.h>
+	#include <linux/netdevice.h>
 
 	void dummy(struct sk_buff *skb)
 	{
