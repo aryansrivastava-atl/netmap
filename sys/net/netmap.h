@@ -47,7 +47,7 @@
 #define	NETMAP_MAX_API	15
 
 #ifdef ATL_CHANGE
-#define NETMAP_SLOT_HEADROOM 88
+#define NETMAP_SLOT_HEADROOM 96
 #endif
 
 /*
