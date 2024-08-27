@@ -2670,6 +2670,8 @@ EXPORT_SYMBOL(mbq_dequeue);
 EXPORT_SYMBOL(mbq_purge);
 EXPORT_SYMBOL(mbq_fini);
 EXPORT_SYMBOL(mbq_safe_fini);
+EXPORT_SYMBOL(netmap_ext_buf_malloc);
+EXPORT_SYMBOL(netmap_ext_buf_free);
 #endif
 
 MODULE_AUTHOR("http://info.iet.unipi.it/~luigi/netmap/");

@@ -175,6 +175,10 @@ int netmap_mem_pools_info_get(struct nmreq_pools_info *,
 #define NETMAP_MEM_IO		0x4	/* the underlying memory is mmapped I/O */
 
 uint32_t netmap_extra_alloc(struct netmap_adapter *, uint32_t *, uint32_t n);
+#ifdef ATL_CHANGE
+uint32_t netmap_ext_buf_malloc(struct netmap_adapter *na);
+void netmap_ext_buf_free(struct netmap_adapter *na, uint32_t index);
+#endif
 
 #ifdef WITH_EXTMEM
 #include <net/netmap_virt.h>

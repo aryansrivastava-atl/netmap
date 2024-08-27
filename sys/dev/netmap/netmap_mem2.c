@@ -1149,6 +1149,29 @@ netmap_mem_bufsize(struct netmap_mem_d *nmd)
     (netmap_obj_offset(&(n)->pools[NETMAP_BUF_POOL], (v)) / NETMAP_BDG_BUF_SIZE(n))
 #endif
 
+#ifdef ATL_CHANGE
+uint32_t
+netmap_ext_buf_malloc(struct netmap_adapter *na)
+{
+	struct netmap_mem_d *nmd = na->nm_mem;
+	uint32_t pos = 0;
+	uint32_t index;
+	void *v = netmap_buf_malloc(nmd, &pos, &index);
+	if (v == NULL) {
+		nm_prerr("no more buffers");
+	}
+	return index;
+}
+
+void
+netmap_ext_buf_free(struct netmap_adapter *na, uint32_t index)
+{
+	struct netmap_mem_d *nmd = na->nm_mem;
+	struct netmap_obj_pool *p = &nmd->pools[NETMAP_BUF_POOL];
+	netmap_obj_free(p, index);
+}
+#endif
+
 /*
  * allocate extra buffers in a linked list.
  * returns the actual number.
