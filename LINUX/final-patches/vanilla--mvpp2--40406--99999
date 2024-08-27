@@ -12,6 +12,15 @@ diff -u a/drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c b/drivers/net/ethernet
  enum mvpp2_bm_pool_log_num {
  	MVPP2_BM_SHORT,
  	MVPP2_BM_LONG,
+@@ -688,7 +692,7 @@
+ 	}
+ 
+ 	/* Allocate and initialize BM pools */
+-	priv->bm_pools = devm_kcalloc(dev, poolnum,
++	priv->bm_pools = devm_kcalloc(dev, MVPP2_BM_MAX_POOLS,
+ 				      sizeof(*priv->bm_pools), GFP_KERNEL);
+ 	if (!priv->bm_pools)
+ 		return -ENOMEM;
 @@ -1435,7 +1439,11 @@ static void mvpp2_interrupts_unmask(void *arg)
 
 	val = MVPP2_CAUSE_MISC_SUM_MASK |

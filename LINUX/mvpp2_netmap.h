@@ -25,12 +25,23 @@
 #include <bsd_glue.h>
 #include <net/netmap.h>
 #include <netmap/netmap_kern.h>
+#include <dev/netmap/netmap_mem2.h>
 
 /* Private adapter storage */
 struct mvpp2_nm_adapter {
 	struct netmap_hw_adapter up;
 	bool irqs_enabled[32];
 };
+
+/* When in Netmap mode we run the native driver in shared buffer mode which uses
+   the first 2 of 8 buffer pools (0=MVPP2_BM_SHORT, 1=MVPP2_BM_LONG) and then
+   we use buffer pools 4-7 for netmap (1 per queue/core). Changing a port from
+   native mode to netmap mode basically requires pointing the ports percpu
+   queues at the appropriate buffer pool. */
+#define MVPP2_NETMAP_BMPOOL_FIRST		4
+#define MVPP2_NETMAP_BMPOOL_LAST		7
+/* Extra netmap buffers required for each of the 4 netmap pools for each MVPP2 instance */
+#define MVPP2_NETMAP_POOL_NUM_BUF		2048
 
 /* Used functions from below netmap header include */
 static u32 mvpp2_thread_read(struct mvpp2 *priv, unsigned int thread, u32 offset);
@@ -50,6 +61,17 @@ static void mvpp2_rx_error(struct mvpp2_port *port, struct mvpp2_rx_desc *rx_des
 static void mvpp2_buff_hdr_pool_put(struct mvpp2_port *port, struct mvpp2_rx_desc *rx_desc, int pool, u32 rx_status);
 static inline void mvpp2_bm_pool_put(struct mvpp2_port *port, int pool, dma_addr_t buf_dma_addr, phys_addr_t buf_phys_addr);
 static inline void mvpp2_rxq_status_update(struct mvpp2_port *port, int rxq_id, int used_count, int free_count);
+static int mvpp2_bm_switch_buffers(struct mvpp2 *priv, bool percpu);
+static int mvpp2_bm_pool_create(struct device *dev, struct mvpp2 *priv, struct mvpp2_bm_pool *bm_pool, int size);
+static void mvpp2_bm_pool_bufsize_set(struct mvpp2 *priv, struct mvpp2_bm_pool *bm_pool, int buf_size);
+static int mvpp2_check_hw_buf_num(struct mvpp2 *priv, struct mvpp2_bm_pool *bm_pool);
+static int mvpp2_bm_pool_destroy(struct device *dev, struct mvpp2 *priv, struct mvpp2_bm_pool *bm_pool);
+static void mvpp2_rxq_long_pool_set(struct mvpp2_port *port, int lrxq, int long_pool);
+static void mvpp2_rxq_short_pool_set(struct mvpp2_port *port, int lrxq, int short_pool);
+static void mvpp2_rxq_offset_set(struct mvpp2_port *port, int prxq, int offset);
+static void mvpp2_rxq_drop_pkts(struct mvpp2_port *port, struct mvpp2_rx_queue *rxq);
+static void mvpp2_bm_bufs_get_addrs(struct device *dev, struct mvpp2 *priv, struct mvpp2_bm_pool *bm_pool, dma_addr_t *dma_addr, phys_addr_t *phys_addr);
+
 
 /* Mask/unmask TX interupts - we will process tx completion before sending new packets */
 static void mvpp2_netmap_mask_tx_interrupts(struct mvpp2_port *port, unsigned int thread)
@@ -211,49 +233,46 @@ static int mvpp2_netmap_rxsync(struct netmap_kring *kring, int flags)
 
 		nm_i = kring->nr_hwtail;
 		while (rx_received && nm_i != hwtail_lim) {
+			struct netmap_slot *slot = &ring->slot[nm_i];
 			struct mvpp2_rx_desc *rx_desc = mvpp2_rxq_next_desc_get(rxq);
 			u32 status = mvpp2_rxdesc_status_get(port, rx_desc);
 			int pool = (status & MVPP2_RXD_BM_POOL_ID_MASK) >> MVPP2_RXD_BM_POOL_ID_OFFS;
-			phys_addr_t phys_addr = mvpp2_rxdesc_cookie_get(port, rx_desc);
-			dma_addr_t dma_addr = mvpp2_rxdesc_dma_addr_get(port, rx_desc);
-			void *data = (void *)phys_to_virt(phys_addr);
-			struct page *page = virt_to_page(data);
-			void *addr = NMB(na, &ring->slot[nm_i]);
-			uint64_t offset = nm_get_offset(kring, &ring->slot[nm_i]);
-			int length;
+			int length = mvpp2_rxdesc_size_get(port, rx_desc) - MVPP2_MH_SIZE;
+			uint32_t buf_index = (uint32_t)mvpp2_rxdesc_cookie_get(port, rx_desc);
+			phys_addr_t paddr;
 
-			if (status & (MVPP2_RXD_BUF_HDR|MVPP2_RXD_ERR_SUMMARY))
-			{
+			if (status & (MVPP2_RXD_BUF_HDR|MVPP2_RXD_ERR_SUMMARY)) {
 				nm_prerr("NETMAP[%s:%d] rxsync error(0x%08x)\n", ifp->name, rxq->id, status);
 				ifp->stats.rx_errors++;
 				mvpp2_rx_error(port, rx_desc);
 				if (status & MVPP2_RXD_BUF_HDR)
 					mvpp2_buff_hdr_pool_put(port, rx_desc, pool, status);
 				else
-					mvpp2_bm_pool_put(port, pool, dma_addr, phys_addr);
+					mvpp2_bm_pool_put(port, pool, mvpp2_rxdesc_dma_addr_get(port, rx_desc), buf_index);
 				rx_received--;
 				rx_complete++;
 				continue;
 			}
 
-			prefetch(page);
-			length = mvpp2_rxdesc_size_get(port, rx_desc);
-			length -= MVPP2_MH_SIZE;
+			/* Put the received netmap buffer into the slot */
+			BUG_ON(buf_index >= na->na_lut.objtotal);
+			paddr = na->na_lut.plut[buf_index].paddr + MVPP2_MH_SIZE + NETMAP_SLOT_HEADROOM;
+			netmap_sync_map_cpu(na, NULL, (bus_dmamap_t)&paddr, length, NR_RX);
+			uint32_t old_index = slot->buf_idx;
+			slot->buf_idx = buf_index;
+			slot->ll_ofs = MVPP2_MH_SIZE + NETMAP_SLOT_HEADROOM;
+			slot->len = length;
+			slot->hash = (uint16_t) ((rx_desc->pp22.buf_dma_addr_key_hash >> 40) & 0xFFFFFF);
+			slot->flags = 0;
+
+			/* Put the old buffer into the buffer pool */
+			BUG_ON(old_index >= na->na_lut.objtotal);
+			paddr = na->na_lut.plut[old_index].paddr;
+			netmap_sync_map_dev(na, NULL, (bus_dmamap_t)&paddr, NETMAP_BUF_SIZE(na), NR_RX);
+			mvpp2_bm_pool_put(port, pool, paddr, old_index);
+
 			rx_packets++;
 			rx_bytes += length;
-
-			dma_sync_single_for_cpu(((struct net_device *)ifp)->dev.parent, dma_addr, length + MVPP2_MH_SIZE, DMA_FROM_DEVICE);
-			prefetch(data + MVPP2_MH_SIZE + MVPP2_SKB_HEADROOM);
-
-			// TODO - populate pool with netmap buffer
-			memcpy(addr + offset, data + MVPP2_MH_SIZE + MVPP2_SKB_HEADROOM, length);
-			// print_hex_dump(KERN_INFO, "", DUMP_PREFIX_NONE, 16, 1, (u8*)(data + MVPP2_MH_SIZE + MVPP2_SKB_HEADROOM), length, true);
-
-			mvpp2_bm_pool_put(port, pool, dma_addr, phys_addr);
-
-			ring->slot[nm_i].len = length;
-			ring->slot[nm_i].flags = 0;
-
 			nm_i = kring->nr_hwtail = nm_next(nm_i, lim);
 			rx_received--;
 			rx_complete++;
@@ -284,10 +303,10 @@ static int mvpp2_netmap_rxsync(struct netmap_kring *kring, int flags)
 		struct netmap_slot *slot = &ring->slot[nm_i];
 		void *addr = NMB(na, slot);
 
-		/* We currently do not do anything here. But if we
-		 * decide to use pool buffers for the Netmap ring,
-		 * then this code would need to free the buffer
-		 * back to the pool.
+		/* We currently do not do anything here because
+		   we allocate enough 'extra' buffers to keep
+		   the h/w buffer pool full even when userspace
+		   is holding on to a buffer.
 		 */
 		if (addr == NETMAP_BUF_BASE(na))	/* bad buf */
 		{
@@ -304,6 +323,136 @@ static int mvpp2_netmap_rxsync(struct netmap_kring *kring, int flags)
 	return 0;
 }
 
+static int mvpp2_netmap_users(struct mvpp2 *priv)
+{
+	int count = 0;
+	int i;
+	for (i = 0; i < priv->port_count; i++) {
+		if (priv->port_list[i] && NA(priv->port_list[i]->dev))
+			count++;
+	}
+	return count;
+}
+
+static void mvpp2_netmap_create_pools(struct netmap_adapter *na, int num_buffers)
+{
+	struct mvpp2_port *port = netdev_priv(na->ifp);
+	struct device *dev = port->dev->dev.parent;
+	struct mvpp2 *priv = port->priv;
+	struct mvpp2_bm_pool *pool;
+	int i, j;
+
+	/* Change native driver to shared BM pools (0-2) */
+	mvpp2_bm_switch_buffers(priv, false);
+	BUG_ON(priv->percpu_pools);
+
+	/* Create BM pools (4-7) for netmap buffers */
+	for (i = MVPP2_NETMAP_BMPOOL_FIRST; i < (MVPP2_NETMAP_BMPOOL_FIRST + 4); i++) {
+		pool = &priv->bm_pools[i];
+		pool->id = i;
+
+		mvpp2_write(priv, MVPP2_BM_INTR_MASK_REG(pool->id), 0);
+		mvpp2_write(priv, MVPP2_BM_INTR_CAUSE_REG(pool->id), 0);
+
+		if (mvpp2_bm_pool_create(dev, priv, pool, MVPP2_BM_POOL_SIZE_MAX)) {
+			printk("ERROR: Failed to create pool of %d buffers\n", MVPP2_BM_POOL_SIZE_MAX);
+			BUG();
+		}
+		pool->pkt_size = NETMAP_BUF_SIZE(na) - NETMAP_SLOT_HEADROOM - MVPP2_SKB_SHINFO_SIZE;
+		mvpp2_bm_pool_bufsize_set(priv, pool, pool->pkt_size + NETMAP_SLOT_HEADROOM);
+
+		for (j=0; j<num_buffers; j++) {
+			uint32_t index = netmap_ext_buf_malloc(na);
+			BUG_ON(!index);
+			void *paddr = (void *)na->na_lut.plut[index].paddr;
+			netmap_sync_map_dev(na, NULL, (bus_dmamap_t)&paddr, NETMAP_BUF_SIZE(na), NR_RX);
+			mvpp2_bm_pool_put(port, pool->id, (dma_addr_t)paddr, index);
+			pool->buf_num += 1;
+		}
+	}
+
+	/* Debug - dump all pool details */
+	for (i = 0; i < MVPP2_BM_MAX_POOLS; i++) {
+		pool = &priv->bm_pools[i];
+		nm_prdis("POOL:%d size:%d size_bytes:%d buf_num:%d buf_size:%d pkt_size:%d\n        port_map:%08x vaddr:0x%llx\n",
+			i, pool->size, pool->size_bytes, pool->buf_num, pool->buf_size, pool->pkt_size, pool->port_map, (unsigned long long)pool->virt_addr);
+	}
+}
+
+static void mvpp2_netmap_destroy_pools(struct netmap_adapter *na)
+{
+	struct mvpp2_port *port = netdev_priv(na->ifp);
+	struct device *dev = port->dev->dev.parent;
+	struct mvpp2 *priv = port->priv;
+	int i, j;
+
+	/* Free all the netmap buffers assigned to the pool and destory it */
+	for (i = MVPP2_NETMAP_BMPOOL_FIRST; i < (MVPP2_NETMAP_BMPOOL_FIRST + 4); i++) {
+		struct mvpp2_bm_pool *pool = &priv->bm_pools[i];
+		int buf_num = mvpp2_check_hw_buf_num(priv, pool);
+		for (j = 0; j < buf_num; j++) {
+			dma_addr_t buf_dma_addr;
+			phys_addr_t buf_phys_addr;
+			mvpp2_bm_bufs_get_addrs(dev, priv, pool, &buf_dma_addr, &buf_phys_addr);
+			netmap_ext_buf_free(na, (uint32_t)buf_phys_addr);
+		}
+		mvpp2_bm_pool_destroy(dev, priv, &priv->bm_pools[i]);
+	}
+
+	/* Change native driver to percpu BM pools */
+	mvpp2_bm_switch_buffers(priv, true);
+	BUG_ON(!priv->percpu_pools);
+}
+
+static void mvpp2_netmap_start(struct netmap_adapter *na)
+{
+	struct mvpp2_port *port = netdev_priv(na->ifp);
+	struct mvpp2 *priv = port->priv;
+	int i;
+
+	rtnl_lock();
+
+	/* Use percpu_pools to indicate we do not have netmap buffer pools configured */
+	if (priv->percpu_pools) {
+		mvpp2_netmap_create_pools (na, MVPP2_NETMAP_POOL_NUM_BUF);
+	}
+
+	/* Use netmap BM pools for this port */
+	for (i = 0; i < port->nrxqs; i++) {
+		mvpp2_rxq_drop_pkts(port, port->rxqs[i]);
+		mvpp2_rxq_short_pool_set(port, i, MVPP2_NETMAP_BMPOOL_FIRST + i);
+		mvpp2_rxq_long_pool_set(port, i, MVPP2_NETMAP_BMPOOL_FIRST + i);
+		mvpp2_rxq_offset_set(port, i, NETMAP_SLOT_HEADROOM);
+	}
+
+	rtnl_unlock();
+}
+
+
+static void mvpp2_netmap_stop(struct netmap_adapter *na)
+{
+	struct mvpp2_port *port = netdev_priv(na->ifp);
+	struct mvpp2 *priv = port->priv;
+	int i;
+
+	rtnl_lock();
+
+	/* Use native BM pools for this port */
+	for (i = 0; i < port->nrxqs; i++) {
+		mvpp2_rxq_drop_pkts(port, port->rxqs[i]);
+		mvpp2_rxq_short_pool_set(port, i, 0); /* MVPP2_BM_SHORT */
+		mvpp2_rxq_long_pool_set(port, i, 1); /* MVPP2_BM_LONG */
+		mvpp2_rxq_offset_set(port, i, MVPP2_SKB_HEADROOM);
+	}
+
+	/* Free all netmap buffers and pools if no longer needed */
+	if (mvpp2_netmap_users(priv) <= 1) {
+		mvpp2_netmap_destroy_pools (na);
+	}
+
+	rtnl_unlock();
+}
+
 static int mvpp2_netmap_reg(struct netmap_adapter *na, int onoff)
 {
 	struct mvpp2_nm_adapter *mna = (struct mvpp2_nm_adapter *)na;
@@ -314,7 +463,11 @@ static int mvpp2_netmap_reg(struct netmap_adapter *na, int onoff)
 
 	/* Enable or disable */
 	if (onoff) {
+		/* Configure all queues on first activation for this port */
 		if (na->active_fds == 0) {
+			/* Setup netmap buffer pools if required and configure port queues to use them */
+			mvpp2_netmap_start(na);
+
 			/* We process TX completions before sending new packets */
 			for (r = 0; r < port->priv->nthreads; r++) {
 				mvpp2_netmap_mask_tx_interrupts(port, r);
@@ -324,7 +477,12 @@ static int mvpp2_netmap_reg(struct netmap_adapter *na, int onoff)
 		nm_set_native_flags(na);
 	} else {
 		nm_clear_native_flags(na);
+		/* Restore all queues to native operation on last deactivation */
 		if (na->active_fds == 0) {
+			/* Use native buffer pools for port and destroy netmap buffer pools if no longer used */
+			mvpp2_netmap_stop(na);
+
+			/* Unmask TX interrupts */
 			for (r = 0; r < port->priv->nthreads; r++) {
 				mvpp2_netmap_unmask_tx_interrupts(port, r);
 				mvpp2_netmap_qvec_interrupt_enable (na, r);
@@ -363,6 +521,7 @@ static void mvpp2_netmap_attach(struct mvpp2_port *port)
 	bzero(&na, sizeof(na));
 	na.na_flags = NAF_OFFSETS;
 	na.ifp = port->dev;
+	na.pdev = port->dev->dev.parent;
 	na.num_tx_desc = 256;
 	na.num_rx_desc = 256;
 	na.nm_register = mvpp2_netmap_reg;
