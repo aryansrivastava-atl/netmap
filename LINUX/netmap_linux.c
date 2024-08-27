@@ -425,12 +425,17 @@ nm_os_send_up(struct ifnet *ifp, struct mbuf *m, struct mbuf *prev)
 	(void)ifp;
 	(void)prev;
 	m->priority = NM_MAGIC_PRIORITY_RX; /* do not reinject to netmap */
+#ifdef ATL_CHANGE
+	/* Process this packet now on the stack of the userspace caller (rather than
+	   queuing on the cpu backlog and then processing later via ksoftirqd) */
+	netif_receive_skb(m);
+#else
 #ifdef NETMAP_LINUX_HAVE_NETIF_RX_NI
 	netif_rx_ni(m);
 #else
 	netif_rx(m);
 #endif
-
+#endif /* ATL_CHANGE */
 	return NULL;
 }
 
