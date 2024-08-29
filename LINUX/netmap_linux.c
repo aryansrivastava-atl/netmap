@@ -38,6 +38,7 @@
 #include <linux/ip.h>
 #ifdef ATL_CHANGE
 #include <uapi/linux/if_arp.h>
+#include <net/dsa.h>
 #endif
 #include <net/pkt_sched.h>
 #include <net/sch_generic.h>
@@ -426,6 +427,53 @@ nm_os_send_up(struct ifnet *ifp, struct mbuf *m, struct mbuf *prev)
 	(void)prev;
 	m->priority = NM_MAGIC_PRIORITY_RX; /* do not reinject to netmap */
 #ifdef ATL_CHANGE
+
+	/* Optimisation for DSA interfaces. Strip the DSA header and
+	   receive directly on the slave interface. This avoids the mid
+	   processing queuing of packets done by the DSA driver and more
+	   importantly the silent dropping of packets when the queue
+	   gets bigger than netdev_max_backlog */
+#if IS_ENABLED(CONFIG_NET_DSA)
+	/* Only support standard Marvell Header (not EDSA) */
+	if (m->protocol == cpu_to_be16(ETH_P_XDSA) &&
+	   ifp->dsa_ptr && ifp->dsa_ptr->tag_ops &&
+	   ifp->dsa_ptr->tag_ops->proto == DSA_TAG_PROTO_DSA)
+	{
+		u8 *dsa_header = m->data - 2;
+		int cmd = dsa_header[0] >> 6;
+		int device = dsa_header[0] & 0x1f;
+		int port = (dsa_header[1] >> 3) & 0x1f;
+		bool trunk = !!(dsa_header[1] & 4);
+		bool tagged = !!(dsa_header[0] & 0x20);
+
+		/* Only simple DSA_CMD_FORWARD(3) frames go the fast path */
+		if (cmd == 3 && port && !trunk && !tagged) {
+			struct dsa_port *cpu_dp = ifp->dsa_ptr;
+			struct dsa_switch_tree *dst = cpu_dp->dst;
+			struct dsa_port *dp = NULL;
+
+			/* Lookup DSA port based on device and port from header */
+			list_for_each_entry(dp, &dst->ports, list) {
+				if (dp->ds->index == device && dp->index == port &&
+					dp->type == DSA_PORT_TYPE_USER) {
+					break;
+				}
+			}
+
+			/* Remove DSA header and receive on the slave port */
+			if (dp) {
+				skb_pull_rcsum(m, 4);
+				memmove(m->data - ETH_HLEN, m->data - ETH_HLEN - 4, 2 * ETH_ALEN);
+				skb_push(m, ETH_HLEN);
+				m->dev = dp->slave;
+				m->pkt_type = PACKET_HOST;
+				m->protocol = eth_type_trans(m, m->dev);
+				skb_set_l2_port_ifindex(m, m->dev->ifindex);
+			}
+		}
+	}
+#endif
+
 	/* Process this packet now on the stack of the userspace caller (rather than
 	   queuing on the cpu backlog and then processing later via ksoftirqd) */
 	netif_receive_skb(m);
