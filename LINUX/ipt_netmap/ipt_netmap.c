@@ -718,7 +718,7 @@ static unsigned int nmring_tg4(struct sk_buff *skb,
 	skb_set_priv(skb, priv);
 
 	if (skb_is_gso(skb) && priv->hooknum == NF_INET_LOCAL_OUT) {
-		/* We need to hand the GSO segmentation ourselves. */
+		/* We need to handle the GSO segmentation ourselves. */
 		struct sk_buff *next;
 		struct sk_buff *segments = skb_gso_segment(skb, 0);
 		m_freem(skb);
@@ -823,7 +823,31 @@ static unsigned int nmring_tg6(struct sk_buff *skb,
 	skb->protocol = htons(ETH_P_IPV6);
 	skb_set_priv(skb, priv);
 
-	if ((skb->len > mtu)||
+	if (skb_is_gso(skb) && priv->hooknum == NF_INET_LOCAL_OUT) {
+		/* We need to handle the GSO segmentation ourselves. */
+		struct sk_buff *next;
+		struct sk_buff *segments = skb_gso_segment(skb, 0);
+		m_freem(skb);
+		if (!IS_ERR(segments) && segments)
+		{
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(5,3,0)
+			for ((skb) = (segments), (next) = (skb) ? (skb)->next : NULL; (skb);
+				 (skb) = (next), (next) = (skb) ? (skb)->next : NULL) {
+#else
+			skb_list_walk_safe(segments, skb, next) {
+#endif
+				/* This no longer needs GSO */
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,13,0)
+				skb->next = NULL;
+#else
+				skb_mark_not_on_list(skb);
+#endif
+				copy_pkt_to_queue(priv->net, skb->sk, skb);
+			}
+		}
+		return NF_STOLEN;
+	}
+	else if ((skb->len > mtu)||
 			(skb_dst(skb) && dst_allfrag(skb_dst(skb))) ||
 			(IP6CB(skb)->frag_max_size &&
 					skb->len > IP6CB(skb)->frag_max_size)) {
