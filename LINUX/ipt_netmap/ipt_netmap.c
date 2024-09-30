@@ -24,7 +24,7 @@
 #include <net/xfrm.h>
 #include <linux/list.h>
 #include <net/icmp.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,4,1)
 #include <net/gso.h>
 #endif
 #include "ipt_netmap.h"
