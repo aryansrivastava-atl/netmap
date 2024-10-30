@@ -476,7 +476,9 @@ nm_os_send_up(struct ifnet *ifp, struct mbuf *m, struct mbuf *prev)
 
 	/* Process this packet now on the stack of the userspace caller (rather than
 	   queuing on the cpu backlog and then processing later via ksoftirqd) */
+	local_bh_disable();
 	netif_receive_skb(m);
+	local_bh_enable();
 #else
 #ifdef NETMAP_LINUX_HAVE_NETIF_RX_NI
 	netif_rx_ni(m);
