@@ -43,6 +43,8 @@ struct mvpp2_nm_adapter {
 /* Extra netmap buffers required for each of the 4 netmap pools for each MVPP2 instance */
 #define MVPP2_NETMAP_POOL_NUM_BUF		2048
 
+#define MVPP2_NETMAP_MAX_RX_PKT_SIZE(na) NETMAP_BUF_SIZE(na) - NETMAP_SLOT_HEADROOM - MVPP2_SKB_SHINFO_SIZE
+
 /* Used functions from below netmap header include */
 static u32 mvpp2_thread_read(struct mvpp2 *priv, unsigned int thread, u32 offset);
 static u32 mvpp2_thread_read_relaxed(struct mvpp2 *priv, unsigned int thread, u32 offset);
@@ -71,6 +73,8 @@ static void mvpp2_rxq_short_pool_set(struct mvpp2_port *port, int lrxq, int shor
 static void mvpp2_rxq_offset_set(struct mvpp2_port *port, int prxq, int offset);
 static void mvpp2_rxq_drop_pkts(struct mvpp2_port *port, struct mvpp2_rx_queue *rxq);
 static void mvpp2_bm_bufs_get_addrs(struct device *dev, struct mvpp2 *priv, struct mvpp2_bm_pool *bm_pool, dma_addr_t *dma_addr, phys_addr_t *phys_addr);
+static void mvpp2_ingress_enable(struct mvpp2_port *port);
+static void mvpp2_ingress_disable(struct mvpp2_port *port);
 
 
 /* Mask/unmask TX interupts - we will process tx completion before sending new packets */
@@ -323,12 +327,50 @@ static int mvpp2_netmap_rxsync(struct netmap_kring *kring, int flags)
 	return 0;
 }
 
+static int mvpp2_netmap_change_mtu(struct net_device *dev, int mtu)
+{
+	struct netmap_adapter *na = NA(dev);
+
+	/* The native drivers behaviour when setting the MTU shuffles queue
+	 * pools in several circumstances and switches between per_cpu and
+	 * shared pools.  This is problematic for the zero copy support in the
+	 * netmap driver as it forces the native driver into shared pool mode
+	 * and then changes the netmap enabled interface pools.  Thus having
+	 * other code change pools associated with rx queues will break invariants
+	 * expected by the netmap driver.
+	 *
+	 * Thus only allow changing the MTU below the buffer size alloted by netmap
+	 * and don't actually alter any hardware settings based on this.
+	 */
+	if (!IS_ALIGNED(MVPP2_RX_PKT_SIZE(mtu), 8)) {
+		netdev_info(dev, "illegal MTU value %d, round to %d\n", mtu,
+			    ALIGN(MVPP2_RX_PKT_SIZE(mtu), 8));
+		mtu = ALIGN(MVPP2_RX_PKT_SIZE(mtu), 8);
+	}
+
+	if (na && mtu > MVPP2_NETMAP_MAX_RX_PKT_SIZE(na)) {
+		netdev_err(dev, "Illegal MTU value %d (> %d) for netmap\n",
+			   mtu, (int)MVPP2_NETMAP_MAX_RX_PKT_SIZE(na));
+		return -EINVAL;
+	}
+
+	/* Update mtu field in netdev
+	 * Should be fine to leave the buffer size at the netmap size this should
+	 * only mean some packets are received which are larger than the mtu.
+	 * This also does not do any of the flow control config which the native
+	 * driver does, this may need to be revisited.
+	 */
+	dev->mtu = mtu;
+
+	return 0;
+}
+
 static int mvpp2_netmap_users(struct mvpp2 *priv)
 {
 	int count = 0;
 	int i;
 	for (i = 0; i < priv->port_count; i++) {
-		if (priv->port_list[i] && NA(priv->port_list[i]->dev))
+		if (priv->port_list[i] && NA(priv->port_list[i]->dev) && nm_netmap_on(NA(priv->port_list[i]->dev)))
 			count++;
 	}
 	return count;
@@ -404,11 +446,21 @@ static void mvpp2_netmap_destroy_pools(struct netmap_adapter *na)
 	BUG_ON(!priv->percpu_pools);
 }
 
+/* Set the correct rxq offset based on whether netmap is enabled or not */
+static void mvpp2_netmap_rxq_offset_set(struct mvpp2_port *port, int prxq)
+{
+	if (NA(port->dev) && nm_netmap_on(NA(port->dev)))
+		mvpp2_rxq_offset_set(port, prxq, NETMAP_SLOT_HEADROOM);
+	else
+		mvpp2_rxq_offset_set(port, prxq, MVPP2_SKB_HEADROOM);
+}
+
 static void mvpp2_netmap_start(struct netmap_adapter *na)
 {
 	struct mvpp2_port *port = netdev_priv(na->ifp);
 	struct mvpp2 *priv = port->priv;
 	int i;
+	bool running = netif_running(port->dev);
 
 	rtnl_lock();
 
@@ -417,6 +469,10 @@ static void mvpp2_netmap_start(struct netmap_adapter *na)
 		mvpp2_netmap_create_pools (na, MVPP2_NETMAP_POOL_NUM_BUF);
 	}
 
+	/* Disable ingress while emptying rings */
+	if (running)
+		mvpp2_ingress_disable(port);
+
 	/* Use netmap BM pools for this port */
 	for (i = 0; i < port->nrxqs; i++) {
 		mvpp2_rxq_drop_pkts(port, port->rxqs[i]);
@@ -424,6 +480,11 @@ static void mvpp2_netmap_start(struct netmap_adapter *na)
 		mvpp2_rxq_long_pool_set(port, i, MVPP2_NETMAP_BMPOOL_FIRST + i);
 		mvpp2_rxq_offset_set(port, i, NETMAP_SLOT_HEADROOM);
 	}
+
+	/* Re-enable ingress if interface was running */
+	if (running)
+		mvpp2_ingress_enable(port);
+
 
 	rtnl_unlock();
 }
@@ -434,8 +495,13 @@ static void mvpp2_netmap_stop(struct netmap_adapter *na)
 	struct mvpp2_port *port = netdev_priv(na->ifp);
 	struct mvpp2 *priv = port->priv;
 	int i;
+	bool running = netif_running(port->dev);
 
 	rtnl_lock();
+
+	/* Disable ingress while emptying rings */
+	if (running)
+		mvpp2_ingress_disable(port);
 
 	/* Use native BM pools for this port */
 	for (i = 0; i < port->nrxqs; i++) {
@@ -444,6 +510,10 @@ static void mvpp2_netmap_stop(struct netmap_adapter *na)
 		mvpp2_rxq_long_pool_set(port, i, 1); /* MVPP2_BM_LONG */
 		mvpp2_rxq_offset_set(port, i, MVPP2_SKB_HEADROOM);
 	}
+
+	/* Re-enable ingress if interface was running */
+	if (running)
+		mvpp2_ingress_enable(port);
 
 	/* Free all netmap buffers and pools if no longer needed */
 	if (mvpp2_netmap_users(priv) <= 1) {
