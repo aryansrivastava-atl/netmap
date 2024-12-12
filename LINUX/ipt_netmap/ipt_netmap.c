@@ -44,37 +44,65 @@ struct ipt_netmap_priv {
 	int hooknum;
 	int __percpu *percpu_recursion;
 	struct list_head list;
+	/* netmap_priv->np_refs is independent as the iptables target can be deleted while
+	 * netmap is trying to sync. Need separate refcnt on ipt_netmap_priv so it can be safely
+	 * deleted in either context.
+	 * This controls validity of when to delete this structure and must be accessed under NMG_LOCK.
+	 */
+	int refcnt;
 };
 
 static struct ipt_netmap_priv ipt_netmap_pipes = { 0 };
 static unsigned ipt_netmap_net_id __read_mostly;
 
+static void ipt_netmap_decref_priv(struct ipt_netmap_priv *priv);
+
+/**
+ * Finds a ipt_netmap_priv structure for the given pipe name.
+ * This increases the refcnt so it must be decremented with
+ * ipt_netmap_decref_priv after calling this function.
+ */
 static struct ipt_netmap_priv *find_ifc_pipe(const char pipe[])
 {
 	struct list_head *node;
 	struct ipt_netmap_priv *entry = NULL;
+	NMG_LOCK();
 	list_for_each(node, &ipt_netmap_pipes.list) {
 		entry = list_entry(node, struct ipt_netmap_priv, list);
 		if (strcmp(pipe, entry->name) == 0
 #ifdef CONFIG_NET_NS
 			&& entry->net == current->nsproxy->net_ns
 #endif
-		)
+		) {
+			entry->refcnt++;
+			NMG_UNLOCK();
 			return entry;
+		}
 	}
+	NMG_UNLOCK();
 	return NULL;
 }
 
+/**
+ * Finds a ipt_netmap_priv structure for the given netmap_adapter.
+ * This increases the refcnt so it must be decremented with
+ * ipt_netmap_decref_priv after calling this function.
+ */
 static struct ipt_netmap_priv *find_priv_from_na(struct netmap_adapter *na)
 {
 	struct list_head *node;
 	struct ipt_netmap_priv *entry = NULL;
 
+	NMG_LOCK();
 	list_for_each(node, &ipt_netmap_pipes.list) {
 		entry = list_entry(node, struct ipt_netmap_priv, list);
-		if (entry->netmap_priv->np_na == na)
+		if (entry->netmap_priv->np_na == na) {
+			entry->refcnt++;
+			NMG_UNLOCK();
 			return entry;
+		}
 	}
+	NMG_UNLOCK();
 	return NULL;
 }
 
@@ -366,6 +394,7 @@ static int ipt_txsync(struct netmap_kring *kring, int flags)
 	kring->nr_hwtail = nm_prev(kring->nr_hwcur, lim);
 	/* We do not use this - but netmap_pipe_krings_delete does */
 	kring->pipe_tail = kring->nr_hwtail;
+	ipt_netmap_decref_priv (priv);
 	return 0;
 }
 
@@ -393,8 +422,10 @@ ipt_rxsync(struct netmap_kring *kring, int flags)
 		return 0;
 	}
 
-	if (head > lim)
+	if (head > lim) {
+		ipt_netmap_decref_priv (priv);
 		return netmap_ring_reinit(kring);
+	}
 
 	/*
 	 * First part: skip past packets that userspace has released.
@@ -421,6 +452,7 @@ ipt_rxsync(struct netmap_kring *kring, int flags)
 	 * Second part: import newly received packets.
 	 */
 	if (!netmap_no_pendintr && !force_update) {
+		ipt_netmap_decref_priv (priv);
 		return 0;
 	}
 
@@ -509,6 +541,7 @@ ipt_rxsync(struct netmap_kring *kring, int flags)
 			m_freem(m);
 			mbq_purge(&tmpq);
 			mbq_fini(&tmpq);
+			ipt_netmap_decref_priv (priv);
 			return netmap_ring_reinit(kring);
 		}
 
@@ -529,7 +562,7 @@ ipt_rxsync(struct netmap_kring *kring, int flags)
 		kring->nr_hwtail = nm_i;
 	}
 	kring->nr_kflags &= ~NKR_PENDINTR;
-
+	ipt_netmap_decref_priv (priv);
 	return 0;
 }
 
@@ -564,6 +597,7 @@ static int create_ifc_pipe(struct xt_nmring_info *info,
 		priv->hooknum != NF_INET_UNSET &&
 		hooknum != NF_INET_UNSET) {
 		pr_err("%s: pipe cannot be assigned to both OUTPUT and PREROUTING\n", pipe);
+		ipt_netmap_decref_priv (priv);
 		return -EBUSY;
 	}
 
@@ -575,6 +609,7 @@ static int create_ifc_pipe(struct xt_nmring_info *info,
 			priv->netmap_priv->np_refs++;
 			priv->hooknum = hooknum;
 			NMG_UNLOCK();
+			/* Don't call ipt_netmap_decref_priv, keep the refcnt incremented due to the share. */
 			info->priv = priv;
 			return 0;
 		}
@@ -594,6 +629,8 @@ static int create_ifc_pipe(struct xt_nmring_info *info,
 		NMG_UNLOCK();
 		return -ENOMEM;
 	}
+
+	priv->refcnt = 1;
 	NMG_UNLOCK();
 	info->priv = priv;
 	priv->net = net;
@@ -888,10 +925,31 @@ static int nmring_tg_checkentry(const struct xt_tgchk_param *par)
 	return -EINVAL;
 }
 
+/**
+ * Decrements the refcnt of a ipt_netmap_priv structure and frees it if necessary.
+ */
+static void
+ipt_netmap_decref_priv(struct ipt_netmap_priv *priv)
+{
+	NMG_LOCK();
+	if (priv) {
+		priv->refcnt--;
+		if (priv->refcnt <= 0) {
+			list_del(&priv->list);
+			free_percpu(priv->percpu_recursion);
+			kfree(priv);
+		}
+	}
+	NMG_UNLOCK();
+}
+
+/**
+ * Decrements the refcnt of the netmap_priv_d structure and deletes it if necessary.
+ * Also decrements the refcnt of the ipt_netmap_priv structure and frees it if necessary.
+ */
 static void
 ipt_netmap_release_ring (struct ipt_netmap_priv *priv)
 {
-	bool freed = false;
 	struct netmap_adapter *na;
 	struct netmap_kring *kring;
 
@@ -902,13 +960,13 @@ ipt_netmap_release_ring (struct ipt_netmap_priv *priv)
 			na = priv->netmap_priv->np_na;
 			kring = na->tx_rings[priv->netmap_priv->np_qfirst[NR_TX]];
 			mbq_safe_purge(&kring->pipe->rx_queue);
-			freed = true;
 		}
 		else {
 			nm_prdis("Decrement pipe %s hooknum:0x%x\n", info->ifc_pipe, priv->hooknum);
 		}
 		netmap_priv_delete(priv->netmap_priv);
-		if (freed) {
+		priv->refcnt--;
+		if (priv->refcnt <= 0) {
 			list_del(&priv->list);
 			free_percpu(priv->percpu_recursion);
 			kfree(priv);
@@ -922,6 +980,8 @@ static void nmring_tg_destroy(const struct xt_tgdtor_param *par)
 	const struct xt_nmring_info *info = par->targinfo;
 	struct ipt_netmap_priv *priv = find_ifc_pipe(info->ifc_pipe);
 
+	/* Once for the find, then again for proper deletion. */
+	ipt_netmap_decref_priv (priv);
 	ipt_netmap_release_ring (priv);
 }
 
