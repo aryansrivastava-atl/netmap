@@ -506,10 +506,11 @@ static void mvpp2_netmap_stop(struct netmap_adapter *na)
 
 	/* Use native BM pools for this port */
 	for (i = 0; i < port->nrxqs; i++) {
-		mvpp2_rxq_drop_pkts(port, port->rxqs[i]);
+		struct mvpp2_rx_queue *rxq = port->rxqs[i];
+		mvpp2_rxq_drop_pkts(port, rxq);
 		mvpp2_rxq_short_pool_set(port, i, 0); /* MVPP2_BM_SHORT */
 		mvpp2_rxq_long_pool_set(port, i, 1); /* MVPP2_BM_LONG */
-		mvpp2_rxq_offset_set(port, i, MVPP2_SKB_HEADROOM);
+		mvpp2_rxq_offset_set(port, rxq->id, MVPP2_SKB_HEADROOM);
 	}
 
 	/* Re-enable ingress if interface was running */
@@ -517,7 +518,7 @@ static void mvpp2_netmap_stop(struct netmap_adapter *na)
 		mvpp2_ingress_enable(port);
 
 	/* Free all netmap buffers and pools if no longer needed */
-	if (mvpp2_netmap_users(priv) <= 1) {
+	if (mvpp2_netmap_users(priv) == 0) {
 		mvpp2_netmap_destroy_pools (na);
 	}
 
