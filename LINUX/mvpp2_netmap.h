@@ -475,10 +475,11 @@ static void mvpp2_netmap_start(struct netmap_adapter *na)
 
 	/* Use netmap BM pools for this port */
 	for (i = 0; i < port->nrxqs; i++) {
-		mvpp2_rxq_drop_pkts(port, port->rxqs[i]);
+		struct mvpp2_rx_queue *rxq = port->rxqs[i];
+		mvpp2_rxq_drop_pkts(port, rxq);
 		mvpp2_rxq_short_pool_set(port, i, MVPP2_NETMAP_BMPOOL_FIRST + i);
 		mvpp2_rxq_long_pool_set(port, i, MVPP2_NETMAP_BMPOOL_FIRST + i);
-		mvpp2_rxq_offset_set(port, i, NETMAP_SLOT_HEADROOM);
+		mvpp2_rxq_offset_set(port, rxq->id, NETMAP_SLOT_HEADROOM);
 	}
 
 	/* Re-enable ingress if interface was running */
