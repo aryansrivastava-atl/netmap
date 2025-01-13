@@ -64,20 +64,18 @@ index 0d8b8c6f9bd3..b58bc2ce4b95 100644
  /**
   * ice_hw_to_dev - Get device pointer from the hardware structure
   * @hw: pointer to the device HW structure
-@@ -5055,6 +5060,12 @@ static int ice_init(struct ice_pf *pf)
- 	/* since everything is good, start the service timer */
- 	mod_timer(&pf->serv_tmr, round_jiffies(jiffies + pf->serv_tmr_period));
+@@ -5116,6 +5121,10 @@
+ 	if (err)
+ 		goto err_init_eth;
  
-+	ice_devlink_register(pf);
-+
 +#ifdef DEV_NETMAP
 +	ice_netmap_attach(pf);
 +#endif
 +
- 	return 0;
- 
- err_init_link:
-@@ -5318,6 +5329,10 @@ static void ice_remove(struct pci_dev *pdev)
+ 	err = ice_init_rdma(pf);
+ 	if (err)
+ 		goto err_init_rdma;
+@@ -5209,6 +5218,10 @@
  	struct ice_pf *pf = pci_get_drvdata(pdev);
  	int i;
  
