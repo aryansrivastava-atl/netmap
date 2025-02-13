@@ -282,14 +282,6 @@ struct thread;
 #define copyin(_from, _to, _len)	(copy_from_user(_to, _from, _len) ? EFAULT : 0)
 #define copyout(_from, _to, _len)	(copy_to_user(_to, _from, _len) ? EFAULT : 0)
 
-#ifdef NETMAP_LINUX_HAVE_SET_RINGPARAM_4ARGS
-int linux_netmap_set_ringparam(struct net_device *, struct ethtool_ringparam *,
-							   struct kernel_ethtool_ringparam *kernel_ering,
-							   struct netlink_ext_ack *extack);
-#else
-int linux_netmap_set_ringparam(struct net_device *, struct ethtool_ringparam *);
-#endif
-
 /* na attach/detach routines */
 #ifdef NETMAP_LINUX_HAVE_AX25PTR
 /*
