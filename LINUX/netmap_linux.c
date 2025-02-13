@@ -39,6 +39,7 @@
 #ifdef ATL_CHANGE
 #include <uapi/linux/if_arp.h>
 #include <net/dsa.h>
+#include <linux/version.h>
 #endif
 #include <net/pkt_sched.h>
 #include <net/sch_generic.h>
@@ -490,7 +491,11 @@ nm_os_send_up(struct ifnet *ifp, struct mbuf *m, struct mbuf *prev)
 				skb_pull_rcsum(m, 4);
 				memmove(m->data - ETH_HLEN, m->data - ETH_HLEN - 4, 2 * ETH_ALEN);
 				skb_push(m, ETH_HLEN);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,7,0)
+				m->dev = dp->user;
+#else
 				m->dev = dp->slave;
+#endif
 				m->pkt_type = PACKET_HOST;
 				m->protocol = eth_type_trans(m, m->dev);
 				skb_set_l2_port_ifindex(m, m->dev->ifindex);

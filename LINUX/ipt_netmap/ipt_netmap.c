@@ -29,6 +29,11 @@
 #endif
 #include "ipt_netmap.h"
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,9,0)
+#include <net/hotdata.h>
+#define netdev_max_backlog net_hotdata.max_backlog
+#endif
+
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sheena Mira-ato");
 MODULE_DESCRIPTION("A loadable kernel module that adds an NMRING target for iptables");
@@ -133,7 +138,11 @@ static bool ipt_ipv4_route(struct net *net, struct sk_buff *skb)
 
 #ifdef CONFIG_XFRM
 	if (!(IPCB(skb)->flags & IPSKB_XFRM_TRANSFORMED) &&
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,7,0)
+	    xfrm_decode_session(net, skb, flowi4_to_flowi(&fl4), AF_INET) == 0) {
+#else
 	    xfrm_decode_session(skb, flowi4_to_flowi(&fl4), AF_INET) == 0) {
+#endif
 		struct dst_entry *dst = skb_dst(skb);
 		skb_dst_set(skb, NULL);
 		dst = xfrm_lookup(net, dst, flowi4_to_flowi(&fl4), skb->sk, 0);
@@ -171,7 +180,11 @@ static bool ipt_ipv6_route(struct net *net, struct sk_buff *skb)
 
 #ifdef CONFIG_XFRM
 	if (!(IP6CB(skb)->flags & IP6SKB_XFRM_TRANSFORMED) &&
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,7,0)
+	    xfrm_decode_session(net, skb, flowi6_to_flowi(&fl6), AF_INET6) == 0) {
+#else
 	    xfrm_decode_session(skb, flowi6_to_flowi(&fl6), AF_INET6) == 0) {
+#endif
 		skb_dst_set(skb, NULL);
 		dst = xfrm_lookup(net, dst, flowi6_to_flowi(&fl6), skb->sk, 0);
 		if (IS_ERR(dst))
@@ -885,7 +898,9 @@ static unsigned int nmring_tg6(struct sk_buff *skb,
 		return NF_STOLEN;
 	}
 	else if ((skb->len > mtu)||
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,7,0)
 			(skb_dst(skb) && dst_allfrag(skb_dst(skb))) ||
+#endif
 			(IP6CB(skb)->frag_max_size &&
 					skb->len > IP6CB(skb)->frag_max_size)) {
 		if (skb_dst(skb)) {
@@ -1032,7 +1047,7 @@ static struct pernet_operations ipt_netmap_net_ops = {
 	.pre_exit	= ipt_netmap_net_exit,
 #endif
 	.id	= &ipt_netmap_net_id,
-	.size	= 0,
+	.size	= sizeof(struct ipt_netmap_priv),
 };
 
 static int __init nmring_tg_init(void)

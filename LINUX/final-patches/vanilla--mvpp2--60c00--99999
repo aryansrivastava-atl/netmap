@@ -1,0 +1,110 @@
+diff --git a/mvpp2/mvpp2_main.c b/mvpp2/mvpp2_main.c
+index 3880dcc0418b..3ea0c4928921 100644
+--- a/mvpp2/mvpp2_main.c
++++ b/mvpp2/mvpp2_main.c
+@@ -43,6 +43,10 @@
+ #include "mvpp2_prs.h"
+ #include "mvpp2_cls.h"
+ 
++#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
++#include <mvpp2_netmap.h>
++#endif
++
+ enum mvpp2_bm_pool_log_num {
+ 	MVPP2_BM_SHORT,
+ 	MVPP2_BM_LONG,
+@@ -687,7 +691,7 @@ static int mvpp2_bm_init(struct device *dev, struct mvpp2 *priv)
+ 	}
+ 
+ 	/* Allocate and initialize BM pools */
+-	priv->bm_pools = devm_kcalloc(dev, poolnum,
++	priv->bm_pools = devm_kcalloc(dev, MVPP2_BM_MAX_POOLS,
+ 				      sizeof(*priv->bm_pools), GFP_KERNEL);
+ 	if (!priv->bm_pools)
+ 		return -ENOMEM;
+@@ -1460,7 +1464,11 @@ static void mvpp2_interrupts_unmask(void *arg)
+ 
+ 	val = MVPP2_CAUSE_MISC_SUM_MASK |
+ 		MVPP2_CAUSE_RXQ_OCCUP_DESC_ALL_MASK(port->priv->hw_version);
++#ifdef CONFIG_NETMAP
++	if (port->has_tx_irqs && !nm_netmap_on(NA(port->dev)))
++#else
+ 	if (port->has_tx_irqs)
++#endif
+ 		val |= MVPP2_CAUSE_TXQ_OCCUP_DESC_ALL_MASK;
+ 
+ 	mvpp2_thread_write(port->priv, thread,
+@@ -2987,7 +2995,11 @@ static int mvpp2_rxq_init(struct mvpp2_port *port,
+ 	put_cpu();
+ 
+ 	/* Set Offset */
++#ifdef CONFIG_NETMAP
++	mvpp2_netmap_rxq_offset_set(port, rxq->id);
++#else
+ 	mvpp2_rxq_offset_set(port, rxq->id, MVPP2_SKB_HEADROOM);
++#endif
+ 
+ 	/* Set coalescing pkts and time */
+ 	mvpp2_rx_pkts_coal_set(port, rxq);
+@@ -3377,6 +3389,11 @@ static irqreturn_t mvpp2_isr(int irq, void *dev_id)
+ {
+ 	struct mvpp2_queue_vector *qv = dev_id;
+ 
++#ifdef CONFIG_NETMAP
++	if (mvpp2_netmap_rx_irq(qv))
++		return IRQ_HANDLED;
++#endif /* DEV_NETMAP */
++
+ 	mvpp2_qvec_interrupt_disable(qv);
+ 
+ 	napi_schedule(&qv->napi);
+@@ -4394,6 +4411,12 @@ static netdev_tx_t mvpp2_tx(struct sk_buff *skb, struct net_device *dev)
+ 	}
+ 	frags = skb_shinfo(skb)->nr_frags + 1;
+ 
++#ifdef CONFIG_NETMAP
++	/* Process all TX queues on this port for this thread/core */
++	if (port->has_tx_irqs && nm_netmap_on(NA(dev))) {
++		mvpp2_tx_done(port, ((1 << port->ntxqs) - 1), thread);
++	}
++#endif
+ 	/* Check number of available descriptors */
+ 	if (mvpp2_aggr_desc_num_check(port, aggr_txq, frags) ||
+ 	    mvpp2_txq_reserved_desc_num_proc(port, txq, txq_pcpu, frags)) {
+@@ -5778,7 +5801,11 @@ static const struct net_device_ops mvpp2_netdev_ops = {
+ 	.ndo_start_xmit		= mvpp2_tx,
+ 	.ndo_set_rx_mode	= mvpp2_set_rx_mode,
+ 	.ndo_set_mac_address	= mvpp2_set_mac_address,
++#ifdef CONFIG_NETMAP
++	.ndo_change_mtu		= mvpp2_netmap_change_mtu,
++#else
+ 	.ndo_change_mtu		= mvpp2_change_mtu,
++#endif
+ 	.ndo_get_stats64	= mvpp2_get_stats64,
+ 	.ndo_eth_ioctl		= mvpp2_ioctl,
+ 	.ndo_vlan_rx_add_vid	= mvpp2_vlan_rx_add_vid,
+@@ -7088,6 +7115,9 @@ static void mvpp2_port_remove(struct mvpp2_port *port)
+ {
+ 	int i;
+ 
++#ifdef CONFIG_NETMAP
++	mvpp2_netmap_detach(port);
++#endif /* CONFIG_NETMAP */
+ 	unregister_netdev(port->dev);
+ 	if (port->phylink)
+ 		phylink_destroy(port->phylink);
+@@ -7691,6 +7721,14 @@ static int mvpp2_probe(struct platform_device *pdev)
+ 	mvpp2_dbgfs_init(priv, pdev->name);
+ 
+ 	platform_set_drvdata(pdev, priv);
++#ifdef CONFIG_NETMAP
++	i = 0;
++	device_for_each_child_node_scoped(&pdev->dev, port_fwnode) {
++		if (priv->port_list[i])
++			mvpp2_netmap_attach(priv->port_list[i]);
++		i++;
++	}
++#endif /* CONFIG_NETMAP */
+ 	return 0;
+ 
+ err_port_probe:
